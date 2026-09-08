@@ -98,7 +98,12 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
   const hasCustomBg = Boolean(customBgUrl && customBgUrl.trim().length > 0);
 
   useEffect(() => {
-    const generateQr = async () => {
+    // If the exact cropped QR code from the PDF document is available, do not generate one
+    if (data.qrCodeImageUrl) {
+      return;
+    }
+
+    const generateFallbackQr = async () => {
       try {
         const payload = data.qrData || `FAYDA:${data.fan}:${data.fullNameEnglish}:DOB=${data.dateOfBirth}`;
         const url = await QRCode.toDataURL(payload, {
@@ -112,11 +117,11 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
         });
         setQrDataUrl(url);
       } catch (err) {
-        console.error('Error generating QR code:', err);
+        console.error('Error generating fallback QR code:', err);
       }
     };
-    generateQr();
-  }, [data.qrData, data.fan, data.fullNameEnglish, data.dateOfBirth]);
+    generateFallbackQr();
+  }, [data.qrCodeImageUrl, data.qrData, data.fan, data.fullNameEnglish, data.dateOfBirth]);
 
   const { canvasWidth, canvasHeight, fields, media } = config;
 
@@ -508,16 +513,16 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 
             {/* --- Front Fields Positioned Dynamically --- */}
 
-            {/* Full Name Amharic & English */}
+            {/* Full Name Amharic */}
             <div
               className={`absolute transition-all rounded-lg p-1.5 ${
-                highlightField === 'fullNameAmharic' || highlightField === 'fullNameEnglish'
+                highlightField === 'fullNameAmharic'
                   ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
                   : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${fields.fullNameAmharic.x}px`,
-                top: `${fields.fullNameAmharic.y - (tConfig.showFieldLabels ? 35 : 0)}px`,
+                top: `${fields.fullNameAmharic.y - (tConfig.showFieldLabels ? 22 : 0)}px`,
                 maxWidth: `${fields.fullNameAmharic.maxWidth || 450}px`,
               }}
               onPointerDown={(e) =>
@@ -528,7 +533,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
             >
               {tConfig.showFieldLabels && (
                 <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>ሙሉ ስም | Full Name</span>
+                  <span>ሙሉ ስም</span>
                   {(showCoordinatesBadges || highlightField === 'fullNameAmharic' || hoveredFieldId === 'fullNameAmharic') && !isExporting && (
                     <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
                       X:{fields.fullNameAmharic.x} Y:{fields.fullNameAmharic.y}
@@ -545,8 +550,38 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               >
                 {cleanFieldText('fullNameAmharic', data.fullNameAmharic)}
               </div>
+            </div>
+
+            {/* Full Name English */}
+            <div
+              className={`absolute transition-all rounded-lg p-1.5 ${
+                highlightField === 'fullNameEnglish'
+                  ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${fields.fullNameEnglish.x}px`,
+                top: `${fields.fullNameEnglish.y - (tConfig.showFieldLabels ? 22 : 0)}px`,
+                maxWidth: `${fields.fullNameEnglish.maxWidth || 450}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(e, 'fullNameEnglish', fields.fullNameEnglish.x, fields.fullNameEnglish.y)
+              }
+              onMouseEnter={() => setHoveredFieldId('fullNameEnglish')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
+                  <span>Full Name</span>
+                  {(showCoordinatesBadges || highlightField === 'fullNameEnglish' || hoveredFieldId === 'fullNameEnglish') && !isExporting && (
+                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
+                      X:{fields.fullNameEnglish.x} Y:{fields.fullNameEnglish.y}
+                    </span>
+                  )}
+                </div>
+              )}
               <div 
-                className="font-semibold leading-tight mt-0.5"
+                className="font-semibold leading-tight"
                 style={{
                   fontSize: `${fields.fullNameEnglish.fontSize}px`,
                   color: fields.fullNameEnglish.color || '#1f2937',
@@ -714,8 +749,17 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 
                 {/* 1D Barcode BELOW the FAN digits */}
                 {tConfig.showFrontBarcode && (
-                  <div className="w-full h-8 px-2 flex items-center justify-center">
-                    {renderBarcodeSvg(cleanFieldText('fan', data.fan) || '4195043670692582', 400, 32, fields.fan.color || '#0f172a')}
+                  <div className="w-full h-8 px-2 flex items-center justify-center overflow-hidden">
+                    {data.barcodeImageUrl ? (
+                      <img
+                        src={data.barcodeImageUrl}
+                        alt="Fayda 1D Barcode"
+                        className="w-full h-full object-contain"
+                        crossOrigin="anonymous"
+                      />
+                    ) : (
+                      renderBarcodeSvg(cleanFieldText('fan', data.fan) || '4195043670692582', 400, 32, fields.fan.color || '#0f172a')
+                    )}
                   </div>
                 )}
 
@@ -937,15 +981,16 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseEnter={() => setHoveredFieldId('qrCodeBack')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
-              {qrDataUrl ? (
+              {data.qrCodeImageUrl || qrDataUrl ? (
                 <img
-                  src={qrDataUrl}
-                  alt="Fayda Digital QR Code"
-                  className="w-full h-full object-contain pointer-events-none"
+                  src={data.qrCodeImageUrl || qrDataUrl}
+                  alt="Exact Cropped QR Code from PDF Slip"
+                  className="w-full h-full object-contain pointer-events-none select-none"
+                  style={{ imageRendering: 'crisp-edges' }}
                 />
               ) : (
-                <div className="w-full h-full bg-gray-100 animate-pulse flex items-center justify-center text-xs text-gray-400">
-                  Generating QR...
+                <div className="w-full h-full bg-gray-50 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center border border-dashed border-gray-200 rounded-lg">
+                  <span className="text-[10px] font-medium text-gray-500">Biometric QR Matrix</span>
                 </div>
               )}
 

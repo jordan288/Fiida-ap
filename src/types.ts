@@ -28,6 +28,12 @@ export interface IdCardData {
   photoUrl: string; // Base64 or URL
   secondaryPhotoUrl?: string; // Optional distinct second photo on bottom right
   qrData: string; // Payload / Fayda verification text
+  qrCodeImageUrl?: string; // High-resolution cropped QR code image extracted directly from the document
+  barcodeImageUrl?: string; // High-resolution cropped 1D barcode image extracted directly from document slip
+  barcodeData?: string; // Extracted or decoded 1D barcode string / numbers
+  documentScanUrl?: string; // Full document page scan canvas from PDF or upload for re-cropping
+  detectedQrBox?: { x: number; y: number; width: number; height: number }; // Detected QR code bounding coordinates on document slip
+  detectedBarcodeBox?: { x: number; y: number; width: number; height: number }; // Detected Barcode bounding coordinates on document slip
   serialNumber: string; // e.g. SN : 984729184
 }
 
@@ -146,4 +152,55 @@ export interface BatchExportOptions {
   includeMetadataHeader: boolean;
   quality?: number;
 }
+
+export type A4BatchPrintLayout = 
+  | '5_per_page_paired'    // 5 IDs per A4 sheet (Front + Back paired side-by-side, 5 rows -> 10 card faces per page)
+  | '5_per_page_duplex'    // 5 IDs per A4 sheet (Sheet 1: 5 Fronts, Sheet 2: 5 Backs aligned for 2-sided duplex)
+  | '5_per_page_front'     // 5 IDs per A4 sheet (Fronts only)
+  | '5_per_page_back'      // 5 IDs per A4 sheet (Backs only)
+  | '1_per_page_detailed'; // 1 ID per A4 sheet with detailed calibration & metadata
+
+export interface A4BatchPrintConfig {
+  layout: A4BatchPrintLayout;
+  showCropMarks: boolean;
+  showCutLines: boolean;
+  showLabels: boolean;
+  cardGapY: number; // mm between rows (default 2.0)
+  cardGapX: number; // mm between Front & Back columns (default 6.0)
+  topMargin: number; // mm top margin (default 10.0)
+}
+
+export interface PdfMarkedRegion {
+  id: string; // 'photo' | 'qrCode' | 'barcode' | 'fullNameAmharic' | 'fullNameEnglish' | 'fan' | 'fcn' | 'dateOfBirth' | 'sex' | 'phoneNumber' | 'regionAmharic' | 'regionEnglish' | 'zoneAmharic' | 'zoneEnglish' | 'woredaAmharic' | 'woredaEnglish' | 'kebele' | 'dateOfIssue' | 'dateOfExpiry';
+  label: string;
+  labelAmh?: string;
+  color: string;
+  type: 'image' | 'qr' | 'text' | 'barcode';
+  // Coordinates as percentage 0 - 100% of document canvas
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PdfTextItemWithBox {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pctX: number;
+  pctY: number;
+  pctWidth: number;
+  pctHeight: number;
+}
+
+export interface PdfMarkedPreset {
+  id: string;
+  name: string;
+  description: string;
+  regions: PdfMarkedRegion[];
+  createdAt?: string;
+}
+
 

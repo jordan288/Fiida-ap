@@ -15,13 +15,41 @@ import { CoordinateCalibrator } from './components/CoordinateCalibrator';
 import { PdfSlipExtractor } from './components/PdfSlipExtractor';
 import { BatchProcessor } from './components/BatchProcessor';
 
+const STORAGE_KEY_COORDS = 'fayda_permanent_coords_config_v2';
+const STORAGE_KEY_TEMPLATE = 'fayda_permanent_template_config_v2';
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'studio' | 'extractor' | 'batch' | 'calibrator'>('studio');
   const [idData, setIdData] = useState<IdCardData>(SAMPLE_ID_DATA);
-  const [config, setConfig] = useState<CoordinatesConfig>(DEFAULT_COORDINATES);
-  const [templateConfig, setTemplateConfig] = useState<TemplateConfig>(DEFAULT_TEMPLATE_CONFIG);
+  const [config, setConfig] = useState<CoordinatesConfig>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_COORDS);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_COORDINATES;
+  });
+  const [templateConfig, setTemplateConfig] = useState<TemplateConfig>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_TEMPLATE);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_TEMPLATE_CONFIG;
+  });
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>(INITIAL_BATCH_QUEUE);
   const [activeQueueIndex, setActiveQueueIndex] = useState<number>(0);
+
+  // Automatically make coordinate and template position settings permanent
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_COORDS, JSON.stringify(config));
+    } catch {}
+  }, [config]);
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_TEMPLATE, JSON.stringify(templateConfig));
+    } catch {}
+  }, [templateConfig]);
 
   const handleOpenQueueItemInStudio = (data: IdCardData, queueItemId?: string) => {
     setIdData(data);

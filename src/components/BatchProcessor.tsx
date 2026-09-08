@@ -33,6 +33,9 @@ import { BatchQueueItem, CoordinatesConfig, IdCardData, TemplateConfig } from '.
 import { SAMPLE_BATCH_APPLICANTS, SAMPLE_ID_DATA, SAMPLE_FEMALE_DATA } from '../data/defaultData';
 import { exportBatchToA4Pdf, exportBatchToZipArchive } from '../utils/batchExporter';
 import { convertGcToEth } from '../utils/ethiopianCalendar';
+import { extractFromPdf, extractFromImage } from '../utils/pdfExtractor';
+import { sanitizeIdCardData } from '../utils/textCleaner';
+import { A4BatchPrintModal } from './A4BatchPrintModal';
 
 interface BatchProcessorProps {
   queue: BatchQueueItem[];
@@ -65,6 +68,9 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
   });
   const [isProcessingBatch, setIsProcessingBatch] = useState(false);
 
+  // A4 Print & Batch Layout Modal
+  const [isA4PrintModalOpen, setIsA4PrintModalOpen] = useState(false);
+
   // Edit Modal State
   const [editingItem, setEditingItem] = useState<BatchQueueItem | null>(null);
   const [copiedFanId, setCopiedFanId] = useState<string | null>(null);
@@ -78,20 +84,10 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
     processMultipleFiles(Array.from(files));
   };
 
-  const processMultipleFiles = (files: File[]) => {
+  const processMultipleFiles = async (files: File[]) => {
     const newItems: BatchQueueItem[] = files.map((file, idx) => {
-      // Pick simulated or parsed sample based on file name or index
       const samplePool = SAMPLE_BATCH_APPLICANTS;
       const baseSample = samplePool[idx % samplePool.length];
-
-      // Custom variations for distinct FANs and timestamps
-      const customFan = generateRandomFan();
-      const customData: IdCardData = {
-        ...baseSample,
-        fan: customFan,
-        fcn: `FCN-${customFan.replace(/\s+/g, '')}`,
-        serialNumber: String(Math.floor(1000000000 + Math.random() * 9000000000)),
-      };
 
       return {
         id: `upload-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`,
@@ -99,7 +95,7 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
         fileSize: `${(file.size / 1024).toFixed(1)} KB`,
         status: 'pending',
         progress: 0,
-        extractedData: customData,
+        extractedData: { ...baseSample },
         uploadedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         selected: true,
       };
@@ -107,8 +103,38 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
 
     setQueue((prev) => [...newItems, ...prev]);
 
-    // Automatically trigger fast batch OCR parsing simulation
-    runBatchExtraction(newItems.map((i) => i.id));
+    // Process files with real extraction asynchronously
+    setIsProcessingBatch(true);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const targetId = newItems[i].id;
+      try {
+        setQueue(prev => prev.map(item => item.id === targetId ? { ...item, status: 'processing', progress: 30 } : item));
+        let extractionRes;
+        if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          extractionRes = await extractFromPdf(file);
+        } else {
+          extractionRes = await extractFromImage(file);
+        }
+        setQueue(prev => prev.map(item => item.id === targetId ? { 
+          ...item, 
+          status: 'ready', 
+          progress: 100, 
+          extractedData: sanitizeIdCardData(extractionRes.data) 
+        } : item));
+      } catch (err) {
+        console.warn('File extraction error in batch:', err);
+        setQueue(prev => prev.map(item => item.id === targetId ? { ...item, status: 'ready', progress: 100 } : item));
+      }
+    }
+    setIsProcessingBatch(false);
+    try {
+      confetti({
+        particleCount: 60,
+        spread: 70,
+        origin: { y: 0.6 },
+      });
+    } catch {}
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -148,15 +174,8 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
         completed++;
         if (completed === idsToProcess.length) {
           setIsProcessingBatch(false);
-          try {
-            confetti({
-              particleCount: 60,
-              spread: 70,
-              origin: { y: 0.6 },
-            });
-          } catch (e) {}
         }
-      }, (idx + 1) * 350);
+      }, (idx + 1) * 200);
     });
   };
 
@@ -468,22 +487,39 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
 
             <button
               type="button"
+              onClick={() => {
+                const selectedItems = queue.filter((i) => i.selected && i.status === 'ready');
+                if (selectedItems.length === 0) {
+                  alert('Please select at least one ready card from the queue to print.');
+                  return;
+                }
+                setIsA4PrintModalOpen(true);
+              }}
+              disabled={isExporting || readyCount === 0}
+              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-sm shadow-emerald-950/20 transition-all cursor-pointer disabled:opacity-50"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Print 5 IDs / A4 Sheet ({selectedCount})</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleExportA4Pdf}
               disabled={isExporting || readyCount === 0}
-              className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer disabled:opacity-50"
             >
-              <Printer className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Export A4 Multi-Page PDF ({selectedCount})</span>
+              <FileText className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Quick Export PDF (5/Page)</span>
             </button>
 
             <button
               type="button"
               onClick={handleExportZip}
               disabled={isExporting || readyCount === 0}
-              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer disabled:opacity-50"
             >
-              <Archive className="w-3.5 h-3.5" />
-              <span>Download ZIP Package ({selectedCount})</span>
+              <Archive className="w-3.5 h-3.5 text-slate-500" />
+              <span>ZIP Package</span>
             </button>
           </div>
         </div>
@@ -770,6 +806,17 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
           item={editingItem}
           onSave={handleSaveEdit}
           onClose={() => setEditingItem(null)}
+        />
+      )}
+
+      {/* A4 Batch Print & Layout Studio Modal */}
+      {isA4PrintModalOpen && (
+        <A4BatchPrintModal
+          isOpen={isA4PrintModalOpen}
+          onClose={() => setIsA4PrintModalOpen(false)}
+          items={queue}
+          config={config}
+          templateConfig={templateConfig}
         />
       )}
     </div>
