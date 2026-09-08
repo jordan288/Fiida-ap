@@ -25,15 +25,18 @@ export interface IdCardData {
   kebele?: string;
   
   // Security & Media
-  photoUrl: string; // Base64 or URL
-  secondaryPhotoUrl?: string; // Optional distinct second photo on bottom right
+  photoUrl: string; // Base64 or URL - Primary/Large photo
+  secondaryPhotoUrl?: string; // Optional distinct second photo on bottom right - Secondary/Small photo
   qrData: string; // Payload / Fayda verification text
   qrCodeImageUrl?: string; // High-resolution cropped QR code image extracted directly from the document
   barcodeImageUrl?: string; // High-resolution cropped 1D barcode image extracted directly from document slip
   barcodeData?: string; // Extracted or decoded 1D barcode string / numbers
+  finImageUrl?: string; // High-resolution cropped FIN/FCN layer extracted directly from document
+  finLayerImageUrl?: string; // Exact FIN layer bitmap for precise card cutout
   documentScanUrl?: string; // Full document page scan canvas from PDF or upload for re-cropping
   detectedQrBox?: { x: number; y: number; width: number; height: number }; // Detected QR code bounding coordinates on document slip
   detectedBarcodeBox?: { x: number; y: number; width: number; height: number }; // Detected Barcode bounding coordinates on document slip
+  detectedFinBox?: { x: number; y: number; width: number; height: number }; // Detected FIN bounding coordinates on document slip
   serialNumber: string; // e.g. SN : 984729184
 }
 
@@ -84,16 +87,24 @@ export interface TemplateConfig {
   showEmblem: boolean; // built-in watermark emblem & Fayda text
   showFooterNotice: boolean; // built-in police notice & footer
   showFieldLabels: boolean; // show sub-labels like "ሙሉ ስም | Full Name"
-  showFanContainerBox: boolean; // show white box around FAN or transparent
-  showBarcodeBox: boolean; // show white box around FIN code or transparent
   
-  // Front Barcode & FAN Cut Controls
-  showFrontBarcode: boolean; // Show or Cut/Hide the barcode on the front FAN part
-  showFrontFan: boolean; // Show or Cut/Hide the FAN number on front
-  
-  // Dual Photo Controls
-  showSecondaryPhoto: boolean; // Show or Cut/Hide 2nd photo on bottom right
+  // Separated Photo Controls (Large and Small)
+  showPrimaryPhoto: boolean; // Show or Cut/Hide 1st photo (main/large)
+  primaryPhotoStyle: 'color' | 'grayscale' | 'sepia' | 'enhanced';
+  showSecondaryPhoto: boolean; // Show or Cut/Hide 2nd photo on bottom right (small)
   secondaryPhotoStyle: 'ghost' | 'grayscale' | 'color' | 'goldBorder';
+  
+  // Separated FAN & Barcode Controls
+  showFrontFan: boolean; // Show or Cut/Hide the FAN number on front
+  showFrontBarcode: boolean; // Show or Cut/Hide the barcode on the front FAN part
+  
+  // FAN Container
+  showFanContainerBox: boolean; // show white box around FAN or transparent
+  
+  // FIN/FCN Layer Controls (Droppable Layer, not text)
+  showFinLayer: boolean; // Show or Cut/Hide FIN layer image
+  finLayerAsImage: boolean; // Use extracted FIN image as layer (true) or fallback to text (false)
+  showBarcodeBox: boolean; // show white box around FIN code or transparent
 }
 
 export interface TemplatePreset {
@@ -171,11 +182,11 @@ export interface A4BatchPrintConfig {
 }
 
 export interface PdfMarkedRegion {
-  id: string; // 'photo' | 'qrCode' | 'barcode' | 'fullNameAmharic' | 'fullNameEnglish' | 'fan' | 'fcn' | 'dateOfBirth' | 'sex' | 'phoneNumber' | 'regionAmharic' | 'regionEnglish' | 'zoneAmharic' | 'zoneEnglish' | 'woredaAmharic' | 'woredaEnglish' | 'kebele' | 'dateOfIssue' | 'dateOfExpiry';
+  id: string; // 'photo' | 'qrCode' | 'barcode' | 'fin' | 'fullNameAmharic' | 'fullNameEnglish' | 'fan' | 'fcn' | 'dateOfBirth' | 'sex' | 'phoneNumber' | 'regionAmharic' | 'regionEnglish' | 'zoneAmharic'[...]
   label: string;
   labelAmh?: string;
   color: string;
-  type: 'image' | 'qr' | 'text' | 'barcode';
+  type: 'image' | 'qr' | 'text' | 'barcode' | 'fin';
   // Coordinates as percentage 0 - 100% of document canvas
   x: number;
   y: number;
@@ -202,5 +213,3 @@ export interface PdfMarkedPreset {
   regions: PdfMarkedRegion[];
   createdAt?: string;
 }
-
-
