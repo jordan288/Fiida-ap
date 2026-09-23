@@ -1420,7 +1420,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseEnter={() => setHoveredFieldId('backFanCut')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
-          {/* Inner clipped surface */}
+             {/* Inner clipped surface */}
 <div
   className="w-full h-full overflow-hidden flex flex-col items-center justify-center bg-white"
   style={{
@@ -1454,7 +1454,14 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
           : '0.12em',
       }}
     >
-      {formatBackFan(data.backFan || data.fan)}
+     function formatBackFan(value?: string): string {
+  const raw = String(value ?? '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 16 && !raw.includes(' ')) {
+    return digits.match(/.{4}/g)!.join('   ');
+  }
+  return raw;
+}
     </div>
   </div>
 </div>
