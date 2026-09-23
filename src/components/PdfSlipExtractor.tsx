@@ -23,19 +23,42 @@ import {
   Terminal,
   Copy,
   CheckCheck,
-  Code
+  Code,
+  Scissors,
+  RotateCw,
+  RotateCcw,
+  Compass
 } from 'lucide-react';
 import { IdCardData, CoordinatesConfig, TemplateConfig, PdfTextItemWithBox } from '../types';
 import { SAMPLE_ID_DATA, SAMPLE_FEMALE_DATA } from '../data/defaultData';
-import { convertGcToEth } from '../utils/ethiopianCalendar';
+import { convertGcToEth, convertEthToGc, getTodayIssueDates, calculateExpiryFromIssue, parseDualDate, formatCardDualDate, formatGcyyyyMmDd, formatGcWith3LetterMonth } from '../utils/ethiopianCalendar';
 import { extractFromPdf, extractFromImage, ExtractionResult } from '../utils/pdfExtractor';
-import { detectAndCenterQrRegion } from '../utils/qrPrecisionCropper';
+import { detectAndCenterQrRegion, cropExactQrCode } from '../utils/qrPrecisionCropper';
+import { detectPhotoRegion } from '../utils/photoDetection';
 import { sanitizeEnglishName, sanitizeAmharicName, sanitizeIdCardData } from '../utils/textCleaner';
-import { loadPermanentRegions, extractAllFromMarkedRegions } from '../utils/pdfRegionExtractor';
+import { loadPermanentRegions, getEffectiveRegions, savePermanentRegions, extractAllFromMarkedRegions, cropCleanDateLayer } from '../utils/pdfRegionExtractor';
+import { autoCropPortraitFromImageOrUrl, autoCropPortraitFromCanvas } from '../utils/portraitThresholdDetector';
+import { 
+  OrientationDetectionResult, 
+  rotateCanvas, 
+  rotatePdfTextItems, 
+  detectSlipOrientationAndRotate,
+  isLandscapeSlip,
+  autoRotateLandscapeSlipToPortrait
+} from '../utils/orientationDetector';
 import { PhotoCropModal } from './PhotoCropModal';
 import { QrCropModal } from './QrCropModal';
+import { PhotoAdjustModal } from './PhotoAdjustModal';
+import { AutoCropCardModal } from './AutoCropCardModal';
 import { PdfPositionMarker } from './PdfPositionMarker';
 import { generateSampleSlipCanvas } from '../utils/sampleSlipGenerator';
+import { detectCardBoundsOnCanvas, cropCardFromSource, CardBoundingBox } from '../utils/cardBoundsDetector';
+import { 
+  removePhotoBackground, 
+  removePhotoBackgroundClassic, 
+  autoRemovePhotoBackground,
+  BgRemovalOptions 
+} from '../utils/imageProcessor';
 
 interface PdfSlipExtractorProps {
   idData: IdCardData;
@@ -44,6 +67,11 @@ interface PdfSlipExtractorProps {
   templateConfig?: TemplateConfig;
   onApplyAndOpenStudio: () => void;
   onOpenBatch?: () => void;
+  initialWorkflowMode?: 'auto' | 'marker';
+  onAddToBatchQueue?: (data: IdCardData, fileName?: string) => void;
+  batchQueueCount?: number;
+  onSaveAndApplyPositions?: (regions: any[], updatedData: IdCardData) => void;
+  onSaveToBatchConverter?: (regions: any[], updatedData: IdCardData) => void;
 }
 
 export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
@@ -53,15 +81,26 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
   templateConfig: _templateConfig,
   onApplyAndOpenStudio,
   onOpenBatch,
+  initialWorkflowMode,
+  onAddToBatchQueue,
+  batchQueueCount,
+  onSaveAndApplyPositions,
+  onSaveToBatchConverter,
 }) => {
   const [extractedData, setExtractedData] = useState<IdCardData>(idData);
-  const [workflowMode, setWorkflowMode] = useState<'auto' | 'marker'>('auto');
+  const [workflowMode, setWorkflowMode] = useState<'auto' | 'marker'>(initialWorkflowMode || 'auto');
+
+  useEffect(() => {
+    if (initialWorkflowMode) {
+      setWorkflowMode(initialWorkflowMode);
+    }
+  }, [initialWorkflowMode]);
   const [extractedTextItems, setExtractedTextItems] = useState<PdfTextItemWithBox[]>([]);
   const [canvasDimensions, setCanvasDimensions] = useState<{ width: number; height: number } | undefined>(undefined);
-  const [detectedPhotoBox, setDetectedPhotoBox] = useState<{ x: number; y: number; width: number; height: number } | undefined>(undefined);
+  const [detectedPhotoBox, setDetectedPhotoBox] = useState<{ x: number; y: number; width: number; height: number } | undefined>(
+    idData.detectedPhotoBox || undefined
+  );
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showPythonCode, setShowPythonCode] = useState(false);
-  const [copiedPython, setCopiedPython] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string>('Upload your Ethiopian Fayda Slip');
   const [fileSize, setFileSize] = useState<string>('Ready for upload');
   const [parseStatus, setParseStatus] = useState<string>('Select or drop an official Fayda verification PDF or image');
@@ -77,15 +116,41 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
   const [qrCropSourceUrl, setQrCropSourceUrl] = useState<string>('');
   const qrInputRef = useRef<HTMLInputElement>(null);
 
+  // Automated Color Thresholding Photo Crop States
+  const [isAutoCroppingPhoto, setIsAutoCroppingPhoto] = useState<boolean>(false);
+  const [thresholdCropFeedback, setThresholdCropFeedback] = useState<string | null>(null);
+
+  // Photo Background Remover States
+  const [isRemovingPhotoBg, setIsRemovingPhotoBg] = useState<boolean>(false);
+  const [isPhotoAdjustModalOpen, setIsPhotoAdjustModalOpen] = useState<boolean>(false);
+  const [bgRemovedSuccessFeedback, setBgRemovedSuccessFeedback] = useState<string | null>(null);
+  const rawPhotoBackupRef = useRef<string | null>(null);
+
+  // Automated Orientation Detection & Canvas Rotation States
+  const [orientationInfo, setOrientationInfo] = useState<OrientationDetectionResult | null>(null);
+  const [isRotatingCanvas, setIsRotatingCanvas] = useState<boolean>(false);
+
   // QR Auto-Detection & Centering States
   const [detectedQrBox, setDetectedQrBox] = useState<{ x: number; y: number; width: number; height: number } | null>(
     idData.detectedQrBox || null
   );
-  const [slipPreviewFocus, setSlipPreviewFocus] = useState<'full' | 'qr'>('full');
+  const [slipPreviewFocus, setSlipPreviewFocus] = useState<'full' | 'qr' | 'photo'>('full');
   const [slipNaturalSize, setSlipNaturalSize] = useState<{ width: number; height: number }>({ width: 800, height: 1100 });
   const [isDetectingQr, setIsDetectingQr] = useState<boolean>(false);
   const [qrAutoDetectStatus, setQrAutoDetectStatus] = useState<string>('');
   const [centeredQrPreviewUrl, setCenteredQrPreviewUrl] = useState<string | null>(null);
+
+  // Photo Auto-Detection & Centering States
+  const [isDetectingPhoto, setIsDetectingPhoto] = useState<boolean>(false);
+  const [photoAutoDetectStatus, setPhotoAutoDetectStatus] = useState<string>('');
+  const [centeredPhotoPreviewUrl, setCenteredPhotoPreviewUrl] = useState<string | null>(null);
+
+  // Auto-Crop Card Bounds (Color Detection) States
+  const [isAutoCropCardModalOpen, setIsAutoCropCardModalOpen] = useState<boolean>(false);
+  const [autoCropSourceUrl, setAutoCropSourceUrl] = useState<string>('');
+  const [originalUncroppedScanUrl, setOriginalUncroppedScanUrl] = useState<string | null>(null);
+  const [autoCropStatus, setAutoCropStatus] = useState<string | null>(null);
+  const [isInstantAutoCropping, setIsInstantAutoCropping] = useState<boolean>(false);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -113,16 +178,103 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
         result = await extractFromPdf(file);
       }
 
-      let sanitizedData = sanitizeIdCardData(result.data);
+      // SIMPLE HEURISTIC: Detect and auto-rotate landscape ID slips to portrait before placing them into the template
+      let activeCanvasUrl = result.pageCanvasUrl;
+      let activeTextItems = result.textItems;
+      let activeDimensions = result.canvasDimensions;
 
-      // If user has calibrated permanent positions, auto-apply them to the newly uploaded document!
-      const permanentRegions = loadPermanentRegions();
-      if (permanentRegions && permanentRegions.length > 0 && result.pageCanvasUrl) {
+      if (activeDimensions && isLandscapeSlip(activeDimensions) && activeCanvasUrl) {
+        setParseStatus(`Landscape ID slip detected (${activeDimensions.width}×${activeDimensions.height}px). Auto-rotating to upright Portrait before placing into template...`);
         try {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = reject;
+            img.src = activeCanvasUrl!;
+          });
+
+          const srcCanvas = document.createElement('canvas');
+          srcCanvas.width = img.naturalWidth || img.width;
+          srcCanvas.height = img.naturalHeight || img.height;
+          const sCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+
+          if (sCtx) {
+            sCtx.drawImage(img, 0, 0);
+            const rotResult = autoRotateLandscapeSlipToPortrait(srcCanvas, {
+              textItems: activeTextItems,
+            });
+
+            if (rotResult.rotated && rotResult.degrees !== 0) {
+              activeCanvasUrl = rotResult.canvas.toDataURL('image/jpeg', 0.92);
+              activeDimensions = rotResult.targetDimensions;
+              activeTextItems = rotResult.rotatedTextItems || activeTextItems;
+
+              result.pageCanvasUrl = activeCanvasUrl;
+              result.canvasDimensions = activeDimensions;
+              result.textItems = activeTextItems;
+              result.data.documentScanUrl = activeCanvasUrl;
+
+              // Re-run precision QR crop on rotated upright canvas
+              try {
+                const qrRes = cropExactQrCode(rotResult.canvas);
+                if (qrRes.detected) {
+                  result.data.qrCodeImageUrl = qrRes.qrUrl;
+                  if (qrRes.qrText) result.data.qrData = qrRes.qrText;
+                  result.detectedQrBox = qrRes.boundingBox;
+                }
+              } catch (qrErr) {
+                console.warn('QR re-crop after landscape rotation error:', qrErr);
+              }
+
+              // Re-run portrait photo crop on rotated upright canvas at Ultra-HD
+              try {
+                const photoCrop = await autoCropPortraitFromCanvas(rotResult.canvas, {
+                  searchZone: detectPhotoRegion(rotResult.canvas, result.detectedQrBox),
+                  targetWidth: 1200,
+                  targetHeight: 1600,
+                  applyBackgroundRemoval: true,
+                  autoEnhance: true,
+                });
+                const finalP = photoCrop.transparentPhotoUrl || photoCrop.rawCroppedUrl;
+                if (finalP) {
+                  result.data.photoUrl = finalP;
+                  result.data.secondaryPhotoUrl = finalP;
+                  result.detectedPhotoBox = photoCrop.boundingBox;
+                }
+              } catch (photoErr) {
+                console.warn('Photo re-crop after landscape rotation error:', photoErr);
+              }
+
+              result.orientationInfo = {
+                originalOrientation: 'landscape',
+                targetOrientation: 'portrait',
+                originalDimensions: rotResult.originalDimensions,
+                targetDimensions: rotResult.targetDimensions,
+                rotationDegrees: rotResult.degrees,
+                confidence: 96,
+                method: 'aspect-ratio',
+                description: rotResult.description,
+              };
+            }
+          }
+        } catch (landErr) {
+          console.warn('Auto-rotate landscape heuristic error:', landErr);
+        }
+      }
+
+      let sanitizedData = sanitizeIdCardData(result.data);
+      const permanentRegions = loadPermanentRegions();
+
+      // Auto-apply calibrated or effective positions to newly uploaded document (cuts exact date layers, FIN, photo)
+      // Now guaranteed to run on the upright portrait canvas!
+      if (activeCanvasUrl) {
+        try {
+          const effectiveRegions = getEffectiveRegions();
           const calibratedData = await extractAllFromMarkedRegions(
-            result.pageCanvasUrl,
-            result.textItems,
-            permanentRegions,
+            activeCanvasUrl,
+            activeTextItems,
+            effectiveRegions,
             sanitizedData
           );
           sanitizedData = sanitizeIdCardData({
@@ -130,7 +282,20 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
             ...calibratedData,
           });
         } catch (calibErr) {
-          console.warn('Auto-applying permanent regions error:', calibErr);
+          console.warn('Auto-applying regions error:', calibErr);
+        }
+      }
+
+      // Automatically remove photo background cleanly without delay-inducing upscaler
+      if (sanitizedData.photoUrl) {
+        try {
+          const transparentPhoto = await autoRemovePhotoBackground(sanitizedData.photoUrl);
+          if (transparentPhoto) {
+            sanitizedData.photoUrl = transparentPhoto;
+            sanitizedData.secondaryPhotoUrl = transparentPhoto;
+          }
+        } catch (bgErr) {
+          console.warn('Auto bg removal in slip extractor error:', bgErr);
         }
       }
 
@@ -147,6 +312,10 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
       }
       if (result.detectedPhotoBox) {
         setDetectedPhotoBox(result.detectedPhotoBox);
+        sanitizedData.detectedPhotoBox = result.detectedPhotoBox;
+        setPhotoAutoDetectStatus(
+          `Applicant photo detected & positioned (${result.detectedPhotoBox.width}×${result.detectedPhotoBox.height}px)`
+        );
       }
       if (result.detectedQrBox) {
         setDetectedQrBox(result.detectedQrBox);
@@ -156,11 +325,22 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
       }
       setDetectedFields(result.detectedFieldsCount);
       setRawExtractedText(result.rawText);
-      setParseStatus(
-        permanentRegions && permanentRegions.length > 0
-          ? `✨ Extracted & auto-applied using your permanent calibrated positions! (${result.detectedFieldsCount} credentials identified)`
-          : `Successfully extracted official data! ${result.detectedFieldsCount} credentials identified.`
-      );
+
+      if (result.orientationInfo) {
+        setOrientationInfo(result.orientationInfo);
+      }
+
+      if (result.orientationInfo && result.orientationInfo.rotationDegrees !== 0) {
+        setParseStatus(
+          `✨ Auto-detected ${result.orientationInfo.originalOrientation} slip (${result.orientationInfo.originalDimensions.width}×${result.orientationInfo.originalDimensions.height}px) → Rotated ${result.orientationInfo.rotationDegrees}° to standard Portrait for accurate field extraction! (${result.detectedFieldsCount} credentials identified)`
+        );
+      } else {
+        setParseStatus(
+          permanentRegions && permanentRegions.length > 0
+            ? `✨ Extracted & auto-applied using your permanent calibrated positions! (${result.detectedFieldsCount} credentials identified)`
+            : `Successfully extracted official data! ${result.detectedFieldsCount} credentials identified.`
+        );
+      }
 
       try {
         confetti({
@@ -210,9 +390,384 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
     }
   };
 
-  const handleApplyCroppedPhoto = (newPhotoUrl: string) => {
-    setExtractedData((prev) => ({ ...prev, photoUrl: newPhotoUrl }));
-    setIdData((prev) => ({ ...prev, photoUrl: newPhotoUrl }));
+  const handleApplyCroppedPhoto = (newPhotoUrl: string, cropBox?: { x: number; y: number; width: number; height: number }) => {
+    const box = cropBox || detectedPhotoBox;
+    setExtractedData((prev) => ({
+      ...prev,
+      photoUrl: newPhotoUrl,
+      secondaryPhotoUrl: newPhotoUrl,
+      ...(box ? { detectedPhotoBox: box } : {}),
+    }));
+    setIdData((prev) => ({
+      ...prev,
+      photoUrl: newPhotoUrl,
+      secondaryPhotoUrl: newPhotoUrl,
+      ...(box ? { detectedPhotoBox: box } : {}),
+    }));
+
+    if (box) {
+      setDetectedPhotoBox(box);
+      setPhotoAutoDetectStatus(`Photo position saved (${box.width}×${box.height}px @ ${box.x}, ${box.y})`);
+      const refW = canvasDimensions?.width || slipNaturalSize.width;
+      const refH = canvasDimensions?.height || slipNaturalSize.height;
+      if (refW > 0 && refH > 0) {
+        try {
+          const currentPermanent = loadPermanentRegions() || [];
+          if (currentPermanent.length > 0) {
+            const pX = Number(Math.max(0, Math.min(90, (box.x / refW) * 100)).toFixed(2));
+            const pY = Number(Math.max(0, Math.min(90, (box.y / refH) * 100)).toFixed(2));
+            const pW = Number(Math.max(5, Math.min(50, (box.width / refW) * 100)).toFixed(2));
+            const pH = Number(Math.max(5, Math.min(50, (box.height / refH) * 100)).toFixed(2));
+            const updated = currentPermanent.map((r) => (r.id === 'photo' ? { ...r, x: pX, y: pY, width: pW, height: pH } : r));
+            savePermanentRegions(updated);
+          }
+        } catch {}
+      }
+    }
+  };
+
+  const handleAutoThresholdCropPortrait = async () => {
+    const source = pagePreviewUrl || extractedData.photoUrl;
+    if (!source) {
+      setParseStatus('No document slip canvas or photo available to auto-crop.');
+      return;
+    }
+
+    setIsAutoCroppingPhoto(true);
+    setThresholdCropFeedback('Detecting ID portrait via color thresholding...');
+
+    try {
+      const result = await autoCropPortraitFromImageOrUrl(source, {
+        applyBackgroundRemoval: true,
+        targetWidth: 480,
+        targetHeight: 640,
+        searchZone: detectedPhotoBox,
+      });
+
+      const finalUrl = result.transparentPhotoUrl || result.rawCroppedUrl;
+      setExtractedData((prev) => ({
+        ...prev,
+        photoUrl: finalUrl,
+        secondaryPhotoUrl: finalUrl,
+        detectedPhotoBox: result.boundingBox,
+      }));
+      setIdData((prev) => ({
+        ...prev,
+        photoUrl: finalUrl,
+        secondaryPhotoUrl: finalUrl,
+        detectedPhotoBox: result.boundingBox,
+      }));
+
+      setDetectedPhotoBox(result.boundingBox);
+      setPhotoAutoDetectStatus(
+        `Photo position detected (${result.boundingBox.width}×${result.boundingBox.height}px @ ${result.boundingBox.x}, ${result.boundingBox.y})`
+      );
+
+      const refW = canvasDimensions?.width || slipNaturalSize.width;
+      const refH = canvasDimensions?.height || slipNaturalSize.height;
+      if (refW > 0 && refH > 0) {
+        try {
+          const currentPermanent = loadPermanentRegions() || [];
+          if (currentPermanent.length > 0) {
+            const pX = Number(Math.max(0, Math.min(90, (result.boundingBox.x / refW) * 100)).toFixed(2));
+            const pY = Number(Math.max(0, Math.min(90, (result.boundingBox.y / refH) * 100)).toFixed(2));
+            const pW = Number(Math.max(5, Math.min(50, (result.boundingBox.width / refW) * 100)).toFixed(2));
+            const pH = Number(Math.max(5, Math.min(50, (result.boundingBox.height / refH) * 100)).toFixed(2));
+            const updated = currentPermanent.map((r) =>
+              r.id === 'photo' ? { ...r, x: pX, y: pY, width: pW, height: pH } : r
+            );
+            savePermanentRegions(updated);
+          }
+        } catch {}
+      }
+
+      setThresholdCropFeedback(
+        `Auto-cropped (${result.boundingBox.width}×${result.boundingBox.height}px, 3:4) • Transparent BG`
+      );
+      setParseStatus('✨ ID Portrait area detected & auto-cropped with color thresholding, and background removed!');
+
+      try {
+        confetti({
+          particleCount: 35,
+          spread: 50,
+          origin: { y: 0.7 },
+        });
+      } catch {}
+
+      setTimeout(() => {
+        setThresholdCropFeedback(null);
+      }, 5000);
+    } catch (err) {
+      console.error('Threshold auto-crop error:', err);
+      setThresholdCropFeedback('Auto-crop failed, please use manual crop');
+      setTimeout(() => setThresholdCropFeedback(null), 3000);
+    } finally {
+      setIsAutoCroppingPhoto(false);
+    }
+  };
+
+  /**
+   * First Photo Background Remover Handler:
+   * Normal Photo Background Remover Handler:
+   * Strips the background of the primary applicant portrait to clean transparent alpha.
+   */
+  const handleRemovePhotoBackground = async () => {
+    // Preserve original un-stripped photo as reference
+    if (!rawPhotoBackupRef.current && extractedData.photoUrl) {
+      rawPhotoBackupRef.current = extractedData.photoUrl;
+    }
+    const photoSrc = rawPhotoBackupRef.current || extractedData.photoUrl;
+    if (!photoSrc) return;
+
+    setIsRemovingPhotoBg(true);
+    setBgRemovedSuccessFeedback(null);
+
+    try {
+      const transparentPhoto = await removePhotoBackground(photoSrc, {
+        tolerance: 30,
+        feather: 2,
+        fillColor: 'transparent',
+      });
+
+      setExtractedData((prev) => ({
+        ...prev,
+        photoUrl: transparentPhoto,
+        secondaryPhotoUrl: transparentPhoto,
+      }));
+      setIdData((prev) => ({
+        ...prev,
+        photoUrl: transparentPhoto,
+        secondaryPhotoUrl: transparentPhoto,
+      }));
+
+      setBgRemovedSuccessFeedback('✓ Photo background made transparent!');
+
+      try {
+        confetti({
+          particleCount: 25,
+          spread: 45,
+          origin: { y: 0.65 },
+        });
+      } catch {}
+
+      setTimeout(() => {
+        setBgRemovedSuccessFeedback(null);
+      }, 4500);
+    } catch (err) {
+      console.error('Failed to remove background from photo:', err);
+      setBgRemovedSuccessFeedback('Failed to remove background. Please try again.');
+      setTimeout(() => setBgRemovedSuccessFeedback(null), 3000);
+    } finally {
+      setIsRemovingPhotoBg(false);
+    }
+  };
+
+  const handleRevertPhotoBackground = () => {
+    if (!rawPhotoBackupRef.current) return;
+    const original = rawPhotoBackupRef.current;
+    setExtractedData((prev) => ({
+      ...prev,
+      photoUrl: original,
+      secondaryPhotoUrl: original,
+    }));
+    setIdData((prev) => ({
+      ...prev,
+      photoUrl: original,
+      secondaryPhotoUrl: original,
+    }));
+    setBgRemovedSuccessFeedback('↺ Restored original portrait backdrop');
+    setTimeout(() => setBgRemovedSuccessFeedback(null), 3000);
+  };
+
+  /**
+   * Manual Canvas Rotation handler:
+   * Rotates the document canvas by the specified degrees (90, 180, 270),
+   * updates the document preview, transforms text item coordinates,
+   * and immediately re-calibrates the QR code, portrait photo, and field regions.
+   */
+  const handleManualRotateSlip = async (degrees: 90 | 180 | 270) => {
+    const currentUrl = pagePreviewUrl || extractedData.documentScanUrl;
+    if (!currentUrl) return;
+
+    setIsRotatingCanvas(true);
+    setParseStatus(`Rotating document canvas ${degrees}° clockwise and re-aligning field coordinates...`);
+
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = reject;
+        img.src = currentUrl;
+      });
+
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = img.naturalWidth || img.width;
+      srcCanvas.height = img.naturalHeight || img.height;
+      const ctx = srcCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+
+      const rotatedCanvas = rotateCanvas(srcCanvas, degrees);
+      const newPageUrl = rotatedCanvas.toDataURL('image/png');
+      setPagePreviewUrl(newPageUrl);
+      setCanvasDimensions({ width: rotatedCanvas.width, height: rotatedCanvas.height });
+      setSlipNaturalSize({ width: rotatedCanvas.width, height: rotatedCanvas.height });
+
+      // Transform extracted text items
+      let updatedTextItems = extractedTextItems;
+      if (extractedTextItems && extractedTextItems.length > 0) {
+        updatedTextItems = rotatePdfTextItems(
+          extractedTextItems,
+          srcCanvas.width,
+          srcCanvas.height,
+          degrees
+        );
+        setExtractedTextItems(updatedTextItems);
+      }
+
+      // Re-run QR precision detection on newly rotated canvas
+      let newQrLocation: { x: number; y: number; width: number; height: number } | undefined;
+      try {
+        const qrRes = cropExactQrCode(rotatedCanvas);
+        if (qrRes.detected && qrRes.boundingBox) {
+          newQrLocation = qrRes.boundingBox;
+          setDetectedQrBox(qrRes.boundingBox);
+          setExtractedData((prev) => ({
+            ...prev,
+            ...(qrRes.qrUrl ? { qrCodeImageUrl: qrRes.qrUrl } : {}),
+            ...(qrRes.qrText ? { qrData: qrRes.qrText } : {}),
+            detectedQrBox: qrRes.boundingBox,
+            documentScanUrl: newPageUrl,
+          }));
+          setIdData((prev) => ({
+            ...prev,
+            ...(qrRes.qrUrl ? { qrCodeImageUrl: qrRes.qrUrl } : {}),
+            ...(qrRes.qrText ? { qrData: qrRes.qrText } : {}),
+            detectedQrBox: qrRes.boundingBox,
+            documentScanUrl: newPageUrl,
+          }));
+        }
+      } catch (qrErr) {
+        console.warn('QR scan after rotation warning:', qrErr);
+      }
+
+      // Re-run portrait auto-crop from rotated canvas with background removal and Ultra-HD upscale
+      try {
+        const cropRes = await autoCropPortraitFromCanvas(rotatedCanvas, {
+          searchZone: detectPhotoRegion(rotatedCanvas, newQrLocation),
+          targetWidth: 1200,
+          targetHeight: 1600,
+          applyBackgroundRemoval: true,
+          autoEnhance: true,
+        });
+        const finalPhoto = cropRes.transparentPhotoUrl || cropRes.rawCroppedUrl;
+        if (finalPhoto) {
+          setExtractedData((prev) => ({
+            ...prev,
+            photoUrl: finalPhoto,
+            secondaryPhotoUrl: finalPhoto,
+          }));
+          setIdData((prev) => ({
+            ...prev,
+            photoUrl: finalPhoto,
+            secondaryPhotoUrl: finalPhoto,
+          }));
+          setDetectedPhotoBox(cropRes.boundingBox);
+        }
+      } catch (photoErr) {
+        console.warn('Photo auto-crop after rotation warning:', photoErr);
+      }
+
+      // Re-apply calibrated marked regions if available
+      try {
+        const effectiveRegions = getEffectiveRegions();
+        const calibratedData = await extractAllFromMarkedRegions(
+          newPageUrl,
+          updatedTextItems,
+          effectiveRegions,
+          extractedData
+        );
+        setExtractedData((prev) => ({
+          ...prev,
+          ...calibratedData,
+          documentScanUrl: newPageUrl,
+        }));
+        setIdData((prev) => ({
+          ...prev,
+          ...calibratedData,
+          documentScanUrl: newPageUrl,
+        }));
+      } catch (regErr) {
+        console.warn('Calibrated regions after rotation warning:', regErr);
+      }
+
+      const isLand = rotatedCanvas.width > rotatedCanvas.height;
+      setOrientationInfo({
+        originalOrientation: isLand ? 'landscape' : 'portrait',
+        targetOrientation: 'portrait',
+        originalDimensions: { width: srcCanvas.width, height: srcCanvas.height },
+        targetDimensions: { width: rotatedCanvas.width, height: rotatedCanvas.height },
+        rotationDegrees: degrees,
+        confidence: 100,
+        method: 'aspect-ratio',
+        description: `Canvas rotated ${degrees}° (${rotatedCanvas.width}×${rotatedCanvas.height}px)`,
+      });
+
+      setParseStatus(`Document canvas rotated ${degrees}°. Re-calibrated portrait and credential extraction.`);
+    } catch (err) {
+      console.error('Manual rotation failed:', err);
+      setParseStatus('Failed to rotate document canvas.');
+    } finally {
+      setIsRotatingCanvas(false);
+    }
+  };
+
+  /**
+   * Automated orientation detection handler:
+   * Re-evaluates orientation using biometric landmarks and QR vectors,
+   * applying rotation automatically if required.
+   */
+  const handleAutoDetectOrientation = async () => {
+    const currentUrl = pagePreviewUrl || extractedData.documentScanUrl;
+    if (!currentUrl) return;
+
+    setIsRotatingCanvas(true);
+    setParseStatus('Detecting optimal document orientation using biometric landmarks & QR vector...');
+
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = reject;
+        img.src = currentUrl;
+      });
+
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = img.naturalWidth || img.width;
+      srcCanvas.height = img.naturalHeight || img.height;
+      const ctx = srcCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+
+      const detection = detectSlipOrientationAndRotate(srcCanvas, {
+        textItems: extractedTextItems,
+      });
+
+      setOrientationInfo(detection.result);
+
+      if (detection.result.rotationDegrees !== 0) {
+        await handleManualRotateSlip(detection.result.rotationDegrees);
+      } else {
+        setParseStatus(`Document is already in optimal upright Portrait orientation (${srcCanvas.width}×${srcCanvas.height}px).`);
+      }
+    } catch (err) {
+      console.error('Auto detect orientation failed:', err);
+      setParseStatus('Orientation analysis encountered an error.');
+    } finally {
+      setIsRotatingCanvas(false);
+    }
   };
 
   const handleOpenQrCropper = () => {
@@ -370,6 +925,83 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
     }
   };
 
+  // Generate a live centered photo preview whenever page preview and detected Photo box are available
+  const generateCenteredPhotoPreview = useCallback((sourceUrl: string, box: { x: number; y: number; width: number; height: number }) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 360;
+      canvas.height = 480;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.clearRect(0, 0, 360, 480);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, box.x, box.y, box.width, box.height, 0, 0, 360, 480);
+      setCenteredPhotoPreviewUrl(canvas.toDataURL('image/png'));
+    };
+    img.src = sourceUrl;
+  }, []);
+
+  useEffect(() => {
+    const source = pagePreviewUrl || extractedData.documentScanUrl;
+    if (source && detectedPhotoBox) {
+      generateCenteredPhotoPreview(source, detectedPhotoBox);
+    }
+  }, [pagePreviewUrl, extractedData.documentScanUrl, detectedPhotoBox, generateCenteredPhotoPreview]);
+
+  // Automatically detect and center the applicant photo area on the slip image
+  const handleAutoDetectAndCenterPhoto = async () => {
+    const source = pagePreviewUrl || extractedData.documentScanUrl || extractedData.photoUrl;
+    if (!source) {
+      photoInputRef.current?.click();
+      return;
+    }
+    setIsDetectingPhoto(true);
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = source;
+      });
+
+      setSlipNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        const box = detectPhotoRegion(canvas);
+        if (box) {
+          setDetectedPhotoBox(box);
+          setSlipPreviewFocus('photo');
+          setPhotoAutoDetectStatus(
+            `Photo position automatically detected at (${box.x}, ${box.y}) [${box.width}×${box.height}px]`
+          );
+          setExtractedData(prev => ({ ...prev, detectedPhotoBox: box }));
+          setIdData(prev => ({ ...prev, detectedPhotoBox: box }));
+        }
+      }
+    } catch (err) {
+      console.warn('Auto-detect photo error:', err);
+    } finally {
+      setIsDetectingPhoto(false);
+    }
+  };
+
+  // Directly apply the auto-centered Photo to the ID card
+  const handleApplyCenteredPhotoDirect = () => {
+    if (!centeredPhotoPreviewUrl) return;
+    handleApplyCroppedPhoto(centeredPhotoPreviewUrl, detectedPhotoBox);
+    setPhotoAutoDetectStatus('Centered photo applied to card successfully!');
+    setTimeout(() => setPhotoAutoDetectStatus(''), 3500);
+  };
+
   const handleFieldChange = (field: keyof IdCardData, value: string) => {
     let cleanVal = value;
     if (field === 'fullNameEnglish') {
@@ -381,14 +1013,34 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
     setExtractedData((prev) => {
       const updated = { ...prev, [field]: cleanVal };
       if (field === 'dateOfBirth') {
-        const eth = convertGcToEth(cleanVal);
-        if (eth) updated.dateOfBirthEth = eth;
+        const dual = parseDualDate(cleanVal);
+        if (dual.gc && dual.eth) {
+          updated.dateOfBirth = dual.gc;
+          updated.dateOfBirthEth = dual.eth;
+        } else {
+          const eth = convertGcToEth(cleanVal);
+          if (eth) updated.dateOfBirthEth = eth;
+        }
+      } else if (field === 'dateOfBirthEth') {
+        const dual = parseDualDate(cleanVal);
+        if (dual.gc && dual.eth) {
+          updated.dateOfBirth = dual.gc;
+          updated.dateOfBirthEth = dual.eth;
+        } else {
+          const gc = convertEthToGc(cleanVal);
+          if (gc) updated.dateOfBirth = gc;
+        }
       }
       return updated;
     });
   };
 
-  const handleApplyToStudio = () => {
+  const handleApplyToStudio = async () => {
+    // If slip is currently in landscape, automatically rotate to portrait before placing into template
+    if (canvasDimensions && isLandscapeSlip(canvasDimensions)) {
+      setParseStatus('Landscape slip detected. Auto-rotating to Portrait before placing into Card Studio template...');
+      await handleAutoDetectOrientation();
+    }
     const sanitized = sanitizeIdCardData(extractedData);
     setIdData(sanitized);
     try {
@@ -399,6 +1051,151 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
       });
     } catch {}
     onApplyAndOpenStudio();
+  };
+
+  // Opens the interactive Auto-Crop Card Modal
+  const handleOpenAutoCropCard = () => {
+    const src = pagePreviewUrl || extractedData.documentScanUrl;
+    if (src) {
+      setAutoCropSourceUrl(src);
+      setIsAutoCropCardModalOpen(true);
+    }
+  };
+
+  // Directly applies the card crop result
+  const handleApplyCardCrop = async (croppedDataUrl: string, bounds: CardBoundingBox) => {
+    // Save original uncropped scan for 1-click restore/undo
+    if (!originalUncroppedScanUrl && (pagePreviewUrl || extractedData.documentScanUrl)) {
+      setOriginalUncroppedScanUrl(pagePreviewUrl || extractedData.documentScanUrl);
+    }
+
+    setPagePreviewUrl(croppedDataUrl);
+    setExtractedData(prev => ({ ...prev, documentScanUrl: croppedDataUrl }));
+    setIdData(prev => ({ ...prev, documentScanUrl: croppedDataUrl }));
+    setCanvasDimensions({ width: Math.round(bounds.width), height: Math.round(bounds.height) });
+    setSlipNaturalSize({ width: Math.round(bounds.width), height: Math.round(bounds.height) });
+
+    // Show feedback toast
+    setAutoCropStatus(`✓ Auto-cropped to ID card bounds (${Math.round(bounds.width)}×${Math.round(bounds.height)}px, CR80 bounds)!`);
+    setTimeout(() => setAutoCropStatus(null), 4500);
+
+    // Re-detect QR & Photo on newly cropped card image
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.src = croppedDataUrl;
+      });
+
+      const croppedCanvas = document.createElement('canvas');
+      croppedCanvas.width = img.naturalWidth;
+      croppedCanvas.height = img.naturalHeight;
+      const ctx = croppedCanvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+
+        // QR re-scan
+        const qrRes = cropExactQrCode(croppedCanvas);
+        if (qrRes?.detected) {
+          setDetectedQrBox(qrRes.boundingBox);
+          if (qrRes.qrUrl) {
+            setExtractedData(prev => ({
+              ...prev,
+              qrCodeImageUrl: qrRes.qrUrl || prev.qrCodeImageUrl,
+              qrData: qrRes.qrText || prev.qrData,
+            }));
+            setIdData(prev => ({
+              ...prev,
+              qrCodeImageUrl: qrRes.qrUrl || prev.qrCodeImageUrl,
+              qrData: qrRes.qrText || prev.qrData,
+            }));
+          }
+        }
+
+        // Photo re-scan
+        const photoCrop = await autoCropPortraitFromCanvas(croppedCanvas, {
+          targetWidth: 1200,
+          targetHeight: 1600,
+          applyBackgroundRemoval: true,
+          autoEnhance: true,
+        });
+        const finalP = photoCrop.transparentPhotoUrl || photoCrop.rawCroppedUrl;
+        if (finalP) {
+          setExtractedData(prev => ({
+            ...prev,
+            photoUrl: finalP,
+            secondaryPhotoUrl: finalP,
+          }));
+          setIdData(prev => ({
+            ...prev,
+            photoUrl: finalP,
+            secondaryPhotoUrl: finalP,
+          }));
+          setDetectedPhotoBox(photoCrop.boundingBox);
+        }
+      }
+    } catch (err) {
+      console.warn('Re-detect on cropped card error:', err);
+    }
+  };
+
+  // 1-Click Instant Auto-Crop using basic color detection
+  const handleInstantAutoCropCard = async () => {
+    const src = pagePreviewUrl || extractedData.documentScanUrl;
+    if (!src) return;
+
+    setIsInstantAutoCropping(true);
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = src;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+
+      ctx.drawImage(img, 0, 0);
+      const detection = detectCardBoundsOnCanvas(canvas, {
+        aspectRatioMode: 'cr80',
+        paddingPx: 4,
+      });
+
+      const cropped = await cropCardFromSource(canvas, detection.boundingBox);
+      await handleApplyCardCrop(cropped.dataUrl, detection.boundingBox);
+    } catch (e) {
+      console.warn('Instant auto-crop error:', e);
+      setAutoCropStatus('Could not find card bounds automatically. Try opening the Auto-Crop tool.');
+      setTimeout(() => setAutoCropStatus(null), 4000);
+    } finally {
+      setIsInstantAutoCropping(false);
+    }
+  };
+
+  // Restore uncropped original scan
+  const handleRestoreOriginalScan = () => {
+    if (originalUncroppedScanUrl) {
+      setPagePreviewUrl(originalUncroppedScanUrl);
+      setExtractedData(prev => ({ ...prev, documentScanUrl: originalUncroppedScanUrl }));
+      setIdData(prev => ({ ...prev, documentScanUrl: originalUncroppedScanUrl }));
+
+      const img = new Image();
+      img.onload = () => {
+        setCanvasDimensions({ width: img.naturalWidth, height: img.naturalHeight });
+        setSlipNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.src = originalUncroppedScanUrl;
+
+      setOriginalUncroppedScanUrl(null);
+      setAutoCropStatus('✓ Restored full uncropped document scan.');
+      setTimeout(() => setAutoCropStatus(null), 3000);
+    }
   };
 
   const handleLoadSample = (type: 'ayele' | 'helen') => {
@@ -472,16 +1269,6 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
               Helen Tadesse (Sample PDF)
             </button>
 
-            <button
-              type="button"
-              onClick={() => setShowPythonCode(!showPythonCode)}
-              className="px-3.5 py-2 bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/50 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
-              title="View pure Python offline CLI extractor script"
-            >
-              <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-              <span>🐍 Python Code</span>
-            </button>
-
             {onOpenBatch && (
               <button
                 type="button"
@@ -489,65 +1276,10 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
                 className="px-3.5 py-2 bg-emerald-700/60 hover:bg-emerald-600 text-emerald-100 border border-emerald-500/50 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ml-auto"
               >
                 <Layers className="w-3.5 h-3.5" />
-                <span>Batch Process Multiple PDFs →</span>
+                <span>{batchQueueCount !== undefined ? `← Back to Batch Queue (${batchQueueCount})` : 'Batch Process Multiple PDFs →'}</span>
               </button>
             )}
           </div>
-
-          {/* Standalone Python Script Viewer Panel */}
-          {showPythonCode && (
-            <div className="mt-5 p-4 rounded-2xl bg-slate-950 border border-cyan-500/40 text-left space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded-lg bg-cyan-500/20 flex items-center justify-center text-cyan-400">
-                    <Code className="w-3.5 h-3.5" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-white">Standalone Offline Python Extractor (`scripts/fayda_extractor.py`)</h4>
-                    <p className="text-[11px] text-slate-400">100% Local Python 3 script — extracts names without "Demographic", FAN, dates, and QR code offline with 0 API keys.</p>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const code = `#!/usr/bin/env python3
-# Fayda Ethiopian Digital ID PDF Slip Extractor
-# 100% Local, Offline, Pure Code Extraction - ZERO Gemini API Key Required.
-# Location in workspace: scripts/fayda_extractor.py
-# Usage: python3 scripts/fayda_extractor.py sample.pdf
-
-import re, json, sys, os
-
-def sanitize_english_name(name: str) -> str:
-    if not name: return ""
-    cleaned = re.sub(r'^(?:Demographics?|Demographic\\s*(?:Information|Details?|Data|Info|Slip|Biometrics?|Verification))[\\s:|\\-/]+', ' ', name, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\\bdemographics?\\s*(?:information|details?|data|info|slip|biometrics?|verification)\\b', ' ', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\\bdemographics?\\b', ' ', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'^(?:Full\\s*Name|Fullname|Name|Applicant\\s*Name)[\\s:|\\-/]+', ' ', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'[;:"|\\\\/_\\-*#[\\]()]+', ' ', cleaned)
-    cleaned = re.sub(r'\\s+', ' ', cleaned).strip()
-    return " ".join(w.capitalize() for w in cleaned.split())
-
-print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
-                    navigator.clipboard.writeText(code);
-                    setCopiedPython(true);
-                    setTimeout(() => setCopiedPython(false), 2500);
-                  }}
-                  className="px-3 py-1.5 bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-400/50 rounded-lg text-cyan-200 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  {copiedPython ? <CheckCheck className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedPython ? 'Copied!' : 'Copy Command'}</span>
-                </button>
-              </div>
-
-              <div className="bg-slate-900 rounded-xl p-3 text-[11px] font-mono text-cyan-200 overflow-x-auto border border-slate-800">
-                <p className="text-slate-400 mb-1"># Run locally in your terminal (No Gemini API Key Needed):</p>
-                <p className="text-emerald-400 font-bold">$ python3 scripts/fayda_extractor.py path/to/fayda_slip.pdf</p>
-                <p className="text-slate-400 mt-2"># Purges the word 'Demographic' from English name and outputs clean JSON payload</p>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
@@ -582,6 +1314,20 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
               Interactive
             </span>
           </button>
+
+          <button
+            type="button"
+            onClick={handleOpenAutoCropCard}
+            disabled={!pagePreviewUrl && !extractedData.documentScanUrl}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-cyan-500/10 hover:from-emerald-500/20 hover:to-cyan-500/20 text-emerald-800 border border-emerald-300 shadow-2xs active:scale-95 disabled:opacity-50"
+            title="Automatically detect ID card bounds within the scanned PDF page using basic color detection"
+          >
+            <CropIcon className="w-3.5 h-3.5 text-emerald-600" />
+            <span>✂️ Auto-Crop ID Card</span>
+            <span className="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-[10px] font-mono font-bold">
+              Color Bounds
+            </span>
+          </button>
         </div>
 
         <div className="text-xs text-slate-500 font-medium pr-2">
@@ -610,7 +1356,27 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
               setExtractedData(newData);
               setIdData(newData);
             }}
+            onSaveAndApplyPositions={(savedRegions, updatedData) => {
+              setExtractedData(updatedData);
+              setIdData(updatedData);
+              if (onSaveAndApplyPositions) {
+                onSaveAndApplyPositions(savedRegions, updatedData);
+              }
+            }}
+            onSaveToBatchConverter={(savedRegions, updatedData) => {
+              setExtractedData(updatedData);
+              setIdData(updatedData);
+              if (onSaveToBatchConverter) {
+                onSaveToBatchConverter(savedRegions, updatedData);
+              } else if (onSaveAndApplyPositions) {
+                onSaveAndApplyPositions(savedRegions, updatedData);
+              }
+              if (onOpenBatch) {
+                onOpenBatch();
+              }
+            }}
             onOpenStudio={onApplyAndOpenStudio}
+            onOpenBatch={onOpenBatch}
           />
         ) : (
           <div className="bg-white rounded-3xl p-10 border border-slate-200 shadow-sm text-center max-w-xl mx-auto space-y-4">
@@ -752,14 +1518,20 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                     Applicant Photo
                   </p>
                   {extractedData.photoUrl && (
-                    <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded">
-                      Auto-Fit
+                    <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                      <Sparkles className="w-2.5 h-2.5 text-emerald-600" />
+                      3:4 Auto-Fit
                     </span>
                   )}
                 </div>
                 <div 
                   onClick={handleOpenPhotoCropper}
-                  className="w-20 h-24 mx-auto rounded-lg overflow-hidden border-2 border-slate-300 hover:border-emerald-500 shadow-xs bg-white relative cursor-pointer group transition-all"
+                  className="w-20 h-24 mx-auto rounded-lg overflow-hidden border-2 border-slate-300 hover:border-emerald-500 shadow-xs relative cursor-pointer group transition-all"
+                  style={{
+                    backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)',
+                    backgroundColor: '#f8fafc',
+                    backgroundSize: '8px 8px',
+                  }}
                   title="Click to carefully crop and position photo"
                 >
                   {extractedData.photoUrl ? (
@@ -780,15 +1552,44 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                     </div>
                   )}
                 </div>
-                <div className="flex items-center justify-center gap-1.5 mt-2">
+
+                {/* Automated Color Thresholding Auto-Crop Button */}
+                <button
+                  type="button"
+                  onClick={handleAutoThresholdCropPortrait}
+                  disabled={isAutoCroppingPhoto || (!pagePreviewUrl && !extractedData.photoUrl)}
+                  className="w-full mt-2 text-[10px] font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 py-1.5 px-2 rounded-lg shadow-xs transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                  title="Automatically detect portrait area via color thresholding and auto-crop for clean background removal"
+                >
+                  {isAutoCroppingPhoto ? (
+                    <>
+                      <RefreshCw className="w-3 h-3 animate-spin text-emerald-200" />
+                      <span>Auto-Cropping...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-3 h-3 text-amber-300" />
+                      <span>⚡ Auto-Crop ID Portrait</span>
+                    </>
+                  )}
+                </button>
+
+                {thresholdCropFeedback && (
+                  <p className="text-[9px] text-emerald-700 font-semibold mt-1 animate-fadeIn leading-tight">
+                    {thresholdCropFeedback}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-center gap-2 mt-1.5">
                   <button
                     type="button"
                     onClick={handleOpenPhotoCropper}
-                    className="text-[10px] text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 cursor-pointer bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-md transition-colors border border-emerald-200"
+                    className="text-[10px] text-slate-600 hover:text-emerald-800 font-medium flex items-center gap-1 cursor-pointer hover:underline"
                   >
                     <CropIcon className="w-3 h-3" />
-                    <span>Crop / Center</span>
+                    <span>Manual</span>
                   </button>
+                  <span className="text-slate-300 text-[10px]">•</span>
                   <button
                     type="button"
                     onClick={() => photoInputRef.current?.click()}
@@ -796,6 +1597,72 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                   >
                     Replace
                   </button>
+                </div>
+
+                {/* First Photo Background Remover Suite */}
+                <div className="mt-2.5 pt-2 border-t border-slate-200/80 space-y-1.5 text-left">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-700 flex items-center gap-1">
+                      <Scissors className="w-3 h-3 text-emerald-600" />
+                      <span>Photo 1 BG Remover</span>
+                    </span>
+                    <span className="text-[9px] font-semibold text-emerald-800 bg-emerald-100/90 px-1.5 py-0.2 rounded font-mono">
+                      Normal Remover
+                    </span>
+                  </div>
+
+                  {/* 1-Click Make Transparent Button */}
+                  <button
+                    type="button"
+                    onClick={() => handleRemovePhotoBackground()}
+                    disabled={isRemovingPhotoBg || !extractedData.photoUrl}
+                    className="w-full py-1.5 px-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-lg text-[10px] font-bold shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="1-Click remove background from Photo 1 and make it transparent"
+                  >
+                    {isRemovingPhotoBg ? (
+                      <>
+                        <RefreshCw className="w-3 h-3 animate-spin text-white" />
+                        <span>Removing Background...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Scissors className="w-3 h-3 text-amber-300" />
+                        <span>⚡ Make Photo 1 Transparent</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Quick Photo Studio Modal Trigger */}
+                  <div className="pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setIsPhotoAdjustModalOpen(true)}
+                      disabled={!extractedData.photoUrl}
+                      className="w-full text-[9px] font-bold py-1 px-1 rounded-md bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 flex items-center justify-center gap-1 cursor-pointer truncate shadow-2xs disabled:opacity-50"
+                      title="Open full Photo Studio & Lighting Laboratory for Photo 1"
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-emerald-600" />
+                      <span>☀️ Studio Lab</span>
+                    </button>
+                  </div>
+
+                  {bgRemovedSuccessFeedback && (
+                    <p className="text-[9px] text-emerald-700 font-bold mt-1 text-center animate-fadeIn leading-tight">
+                      {bgRemovedSuccessFeedback}
+                    </p>
+                  )}
+
+                  {rawPhotoBackupRef.current && rawPhotoBackupRef.current !== extractedData.photoUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRevertPhotoBackground}
+                      className="w-full mt-1.5 py-0.5 text-[9px] text-slate-500 hover:text-slate-800 font-medium flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                      title="Undo background removal and restore original portrait backdrop"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5 text-slate-400" />
+                      <span>Restore original backdrop</span>
+                    </button>
+                  )}
                 </div>
                 <input
                   type="file"
@@ -879,8 +1746,25 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
             {pagePreviewUrl && (
               <div className="pt-2 space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[11px] font-bold text-slate-800">Uploaded Document Slip Scan</span>
+                    {orientationInfo && (
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                          orientationInfo.rotationDegrees !== 0
+                            ? 'bg-amber-50 text-amber-900 border-amber-300'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        }`}
+                        title={orientationInfo.description}
+                      >
+                        <RotateCw className="w-2.5 h-2.5 text-emerald-600" />
+                        <span>
+                          {orientationInfo.rotationDegrees !== 0
+                            ? `Rotated ${orientationInfo.rotationDegrees}° (${orientationInfo.originalOrientation} → Portrait)`
+                            : `Portrait Upright (${canvasDimensions.width}×${canvasDimensions.height}px)`}
+                        </span>
+                      </span>
+                    )}
                     {detectedQrBox && (
                       <span className="text-[10px] font-bold bg-cyan-100 text-cyan-800 px-2 py-0.5 rounded-full border border-cyan-200">
                         QR Centered
@@ -889,6 +1773,50 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                   </div>
 
                   <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* Auto-Crop ID Card Button */}
+                    <button
+                      type="button"
+                      onClick={handleOpenAutoCropCard}
+                      disabled={!pagePreviewUrl && !extractedData.documentScanUrl}
+                      className="text-[10px] text-white hover:text-white font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border border-emerald-400/50 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50"
+                      title="Automatically detect ID card bounds within the scanned PDF page using basic color detection"
+                    >
+                      <CropIcon className="w-3 h-3" />
+                      <span>Auto-Crop</span>
+                      <span className="text-[9px] bg-emerald-950/60 text-emerald-200 px-1 py-0.2 rounded font-mono">
+                        Color Bounds
+                      </span>
+                    </button>
+
+                    {/* 1-Click Instant Auto-Crop */}
+                    <button
+                      type="button"
+                      onClick={handleInstantAutoCropCard}
+                      disabled={isInstantAutoCropping || (!pagePreviewUrl && !extractedData.documentScanUrl)}
+                      className="text-[10px] text-emerald-800 hover:text-emerald-950 font-bold bg-emerald-100/90 hover:bg-emerald-200 border border-emerald-300 px-2 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
+                      title="1-Click Instant Auto-Crop: automatically finds ID card perimeter using color detection"
+                    >
+                      {isInstantAutoCropping ? (
+                        <RefreshCw className="w-3 h-3 animate-spin text-emerald-700" />
+                      ) : (
+                        <Zap className="w-3 h-3 text-emerald-600" />
+                      )}
+                      <span>{isInstantAutoCropping ? 'Cropping...' : '⚡ 1-Click Crop'}</span>
+                    </button>
+
+                    {/* Restore full uncropped page scan */}
+                    {originalUncroppedScanUrl && (
+                      <button
+                        type="button"
+                        onClick={handleRestoreOriginalScan}
+                        className="text-[10px] text-amber-800 hover:text-amber-950 font-bold bg-amber-50 hover:bg-amber-100 border border-amber-300 px-2 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+                        title="Undo auto-crop and restore the full uncropped PDF page scan"
+                      >
+                        <RotateCcw className="w-3 h-3 text-amber-600" />
+                        <span>Restore Full Page</span>
+                      </button>
+                    )}
+
                     {/* Auto-Detect & Center Button */}
                     <button
                       type="button"
@@ -929,19 +1857,125 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                   </div>
                 </div>
 
-                {/* View Mode Toggle: Full Slip vs Centered QR Area */}
+                {/* Auto-Crop Card Bounds Status Banner */}
+                {autoCropStatus && (
+                  <div className="bg-emerald-50 border border-emerald-300 text-emerald-900 px-3 py-1.5 rounded-xl text-xs flex items-center justify-between gap-2 shadow-2xs animate-fadeIn">
+                    <span className="font-semibold flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      {autoCropStatus}
+                    </span>
+                    {originalUncroppedScanUrl && (
+                      <button
+                        type="button"
+                        onClick={handleRestoreOriginalScan}
+                        className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 underline cursor-pointer shrink-0"
+                      >
+                        Undo Crop
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Canvas Orientation Detection & Rotation Controls Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 text-white px-3 py-2 rounded-xl text-xs shadow-xs border border-slate-800">
+                  <div className="flex items-center gap-1.5">
+                    <Compass className="w-3.5 h-3.5 text-cyan-400" />
+                    <span className="text-[11px] font-bold text-slate-200">Orientation:</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold border ${
+                      canvasDimensions.width > canvasDimensions.height
+                        ? 'bg-amber-950/80 text-amber-300 border-amber-600/50 animate-pulse'
+                        : 'bg-slate-800 text-cyan-300 border-slate-700'
+                    }`}>
+                      {canvasDimensions.width > canvasDimensions.height ? 'Landscape' : 'Portrait'} ({canvasDimensions.width}×{canvasDimensions.height}px)
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {canvasDimensions.width > canvasDimensions.height && (
+                      <button
+                        type="button"
+                        onClick={handleAutoDetectOrientation}
+                        disabled={isRotatingCanvas}
+                        className="text-[10.5px] bg-amber-600 hover:bg-amber-500 active:scale-95 text-white font-bold px-2.5 py-1 rounded-lg shadow-xs flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 animate-bounce"
+                        title="Auto-rotate landscape ID slip to standard upright Portrait"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>{isRotatingCanvas ? 'Rotating...' : '⚡ Auto-Rotate to Portrait'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleManualRotateSlip(270)}
+                      disabled={isRotatingCanvas}
+                      className="text-[10.5px] bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-bold px-2 py-1 rounded-lg border border-slate-700 flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                      title="Rotate slip canvas 90° Counter-Clockwise (270° CW)"
+                    >
+                      <RotateCcw className={`w-3 h-3 text-cyan-400 ${isRotatingCanvas ? 'animate-spin' : ''}`} />
+                      <span>⟲ 90° CCW</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleManualRotateSlip(90)}
+                      disabled={isRotatingCanvas}
+                      className="text-[10.5px] bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-bold px-2 py-1 rounded-lg border border-slate-700 flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                      title="Rotate slip canvas 90° Clockwise"
+                    >
+                      <RotateCw className={`w-3 h-3 text-cyan-400 ${isRotatingCanvas ? 'animate-spin' : ''}`} />
+                      <span>⟳ 90° CW</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleManualRotateSlip(180)}
+                      disabled={isRotatingCanvas}
+                      className="text-[10.5px] bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-bold px-2 py-1 rounded-lg border border-slate-700 flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                      title="Invert slip canvas 180°"
+                    >
+                      <span>↺ 180°</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAutoDetectOrientation}
+                      disabled={isRotatingCanvas}
+                      className="text-[10.5px] bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold px-2.5 py-1 rounded-lg shadow-xs flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                      title="Re-run automated orientation detector (inspects QR finder patterns, skin locus, and aspect ratio)"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>{isRotatingCanvas ? 'Aligning...' : '⚡ Auto-Align'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* View Mode Toggle: Full Slip vs Centered Photo Area vs Centered QR Area */}
                 <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs">
                   <button
                     type="button"
                     onClick={() => setSlipPreviewFocus('full')}
-                    className={`flex-1 py-1 px-2.5 rounded-lg font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    className={`flex-1 py-1 px-2 rounded-lg font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
                       slipPreviewFocus === 'full'
                         ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
                         : 'text-slate-500 hover:text-slate-800'
                     }`}
                   >
                     <FileText className="w-3 h-3" />
-                    <span>Full Slip Page</span>
+                    <span>Full Slip</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!detectedPhotoBox) {
+                        handleAutoDetectAndCenterPhoto();
+                      } else {
+                        setSlipPreviewFocus('photo');
+                      }
+                    }}
+                    className={`flex-1 py-1 px-2 rounded-lg font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                      slipPreviewFocus === 'photo'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-emerald-700 hover:bg-emerald-50'
+                    }`}
+                  >
+                    <Camera className="w-3 h-3" />
+                    <span>👤 Photo Area {detectedPhotoBox ? '✓' : ''}</span>
                   </button>
                   <button
                     type="button"
@@ -952,27 +1986,106 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                         setSlipPreviewFocus('qr');
                       }
                     }}
-                    className={`flex-1 py-1 px-2.5 rounded-lg font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    className={`flex-1 py-1 px-2 rounded-lg font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1 ${
                       slipPreviewFocus === 'qr'
                         ? 'bg-cyan-600 text-white shadow-xs'
                         : 'text-cyan-700 hover:bg-cyan-50'
                     }`}
                   >
                     <Crosshair className="w-3 h-3" />
-                    <span>🎯 Centered QR Area (Auto-Detected)</span>
+                    <span>🎯 QR Area {detectedQrBox ? '✓' : ''}</span>
                   </button>
                 </div>
 
                 {/* Status Notice */}
-                {qrAutoDetectStatus && (
+                {slipPreviewFocus === 'photo' && photoAutoDetectStatus && (
+                  <div className="text-[10.5px] bg-emerald-50 border border-emerald-200 text-emerald-900 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
+                    <Sparkles className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span className="truncate">{photoAutoDetectStatus}</span>
+                  </div>
+                )}
+                {slipPreviewFocus === 'qr' && qrAutoDetectStatus && (
                   <div className="text-[10.5px] bg-cyan-50 border border-cyan-200 text-cyan-900 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
                     <Sparkles className="w-3 h-3 text-cyan-600 shrink-0" />
                     <span className="truncate">{qrAutoDetectStatus}</span>
                   </div>
                 )}
 
-                {/* Mode 1: Centered QR Focus View */}
-                {slipPreviewFocus === 'qr' ? (
+                {/* Mode 1: Centered Photo Focus View */}
+                {slipPreviewFocus === 'photo' ? (
+                  <div className="rounded-xl border-2 border-emerald-500 bg-slate-950 p-3 text-white space-y-2 relative overflow-hidden shadow-inner">
+                    <div className="flex items-center justify-between text-[11px] text-emerald-300 font-mono">
+                      <span className="flex items-center gap-1 font-bold">
+                        <Scan className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                        <span>Slip Photo Position & Auto-Crop</span>
+                      </span>
+                      {detectedPhotoBox && (
+                        <span>
+                          {detectedPhotoBox.width}×{detectedPhotoBox.height}px @ ({detectedPhotoBox.x}, {detectedPhotoBox.y})
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Centered Photo Reticle Viewport */}
+                    <div className="relative w-full h-44 bg-slate-900 rounded-lg flex items-center justify-center overflow-hidden border border-slate-800">
+                      {centeredPhotoPreviewUrl ? (
+                        <div className="relative inline-block">
+                          <img
+                            src={centeredPhotoPreviewUrl}
+                            alt="Centered Applicant Photo"
+                            className="w-28 h-36 object-cover rounded-sm border border-emerald-400/60 shadow-lg bg-slate-800"
+                          />
+                          {/* Corner Brackets Target Reticle */}
+                          <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400 pointer-events-none" />
+                          <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400 pointer-events-none" />
+                          <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400 pointer-events-none" />
+                          <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400 pointer-events-none" />
+                        </div>
+                      ) : (
+                        <div className="text-center p-4 text-slate-400 text-xs">
+                          <p>Locating applicant photo position on slip...</p>
+                          <button
+                            type="button"
+                            onClick={handleAutoDetectAndCenterPhoto}
+                            className="mt-2 text-emerald-400 underline font-bold"
+                          >
+                            Run Photo Detection
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Center Crosshair */}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-30">
+                        <div className="w-16 h-px bg-emerald-400" />
+                        <div className="h-16 w-px bg-emerald-400 absolute" />
+                      </div>
+                    </div>
+
+                    {/* Actions under Centered Photo View */}
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleApplyCenteredPhotoDirect}
+                        disabled={!centeredPhotoPreviewUrl}
+                        className="flex-1 py-1.5 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+                        title="Apply this centered photo directly to the card without manual cropping"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Apply Centered Photo</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleOpenPhotoCropper}
+                        className="flex-1 py-1.5 px-2.5 bg-slate-800 hover:bg-slate-700 text-emerald-200 border border-slate-700 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                        title="Fine-tune position or dimensions in manual cropping tool"
+                      >
+                        <CropIcon className="w-3 h-3 text-emerald-400" />
+                        <span>Open Manual Cropper</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : slipPreviewFocus === 'qr' ? (
+                  /* Mode 2: Centered QR Focus View */
                   <div className="rounded-xl border-2 border-cyan-400 bg-slate-950 p-3 text-white space-y-2 relative overflow-hidden shadow-inner">
                     <div className="flex items-center justify-between text-[11px] text-cyan-300 font-mono">
                       <span className="flex items-center gap-1 font-bold">
@@ -1044,7 +2157,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                     </div>
                   </div>
                 ) : (
-                  /* Mode 2: Full Document Page Preview with QR bounding box marker */
+                  /* Mode 3: Full Document Page Preview with Photo & QR bounding box markers */
                   <div className="rounded-xl border border-slate-200 overflow-hidden max-h-52 overflow-y-auto bg-slate-100 relative group">
                     <div className="relative inline-block w-full">
                       <img
@@ -1061,6 +2174,29 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                           }
                         }}
                       />
+
+                      {/* Interactive Highlight Box over the Auto-Detected Photo Area */}
+                      {detectedPhotoBox && slipNaturalSize.width > 0 && slipNaturalSize.height > 0 && (
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSlipPreviewFocus('photo');
+                          }}
+                          className="absolute border-2 border-emerald-500 bg-emerald-400/25 rounded-sm hover:bg-emerald-400/40 transition-all cursor-pointer shadow-md flex items-start justify-end p-0.5 animate-pulse"
+                          style={{
+                            top: `${(detectedPhotoBox.y / slipNaturalSize.height) * 100}%`,
+                            left: `${(detectedPhotoBox.x / slipNaturalSize.width) * 100}%`,
+                            width: `${(detectedPhotoBox.width / slipNaturalSize.width) * 100}%`,
+                            height: `${(detectedPhotoBox.height / slipNaturalSize.height) * 100}%`,
+                          }}
+                          title={`Auto-detected Photo position: ${detectedPhotoBox.width}×${detectedPhotoBox.height}px @ (${detectedPhotoBox.x}, ${detectedPhotoBox.y}). Click to inspect!`}
+                        >
+                          <span className="bg-emerald-700 text-white text-[9px] font-bold px-1 rounded-sm shadow-xs flex items-center gap-0.5">
+                            <Camera className="w-2.5 h-2.5" />
+                            <span>Photo Area</span>
+                          </span>
+                        </div>
+                      )}
 
                       {/* Interactive Highlight Box over the Auto-Detected QR Area */}
                       {detectedQrBox && slipNaturalSize.width > 0 && slipNaturalSize.height > 0 && (
@@ -1089,8 +2225,8 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                     {/* Hover Overlay */}
                     <div className="absolute inset-0 bg-slate-900/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-xs font-bold gap-2 pointer-events-none">
                       <span className="bg-slate-900/85 px-3 py-1.5 rounded-xl border border-white/20 flex items-center gap-1.5">
-                        <Crosshair className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Click highlighted QR to center or buttons above to crop</span>
+                        <Crosshair className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Click highlighted Photo or QR to center or buttons above to crop</span>
                       </span>
                     </div>
                   </div>
@@ -1124,14 +2260,29 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={handleApplyToStudio}
-                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
-              >
-                <span>Apply & Open in Card Studio</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {onAddToBatchQueue && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sanitized = sanitizeIdCardData(extractedData);
+                      onAddToBatchQueue(sanitized, selectedFileName);
+                    }}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                  >
+                    <Layers className="w-4 h-4" />
+                    <span>+ Add to Batch Queue</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleApplyToStudio}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                >
+                  <span>Apply & Open in Card Studio</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Input Groups */}
@@ -1143,7 +2294,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.fullNameAmharic}
+                  value={extractedData.fullNameAmharic || ''}
                   onChange={(e) => handleFieldChange('fullNameAmharic', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 />
@@ -1159,7 +2310,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.fullNameEnglish}
+                  value={extractedData.fullNameEnglish || ''}
                   onChange={(e) => handleFieldChange('fullNameEnglish', e.target.value)}
                   placeholder="e.g. Ayele Zekwos Daka"
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
@@ -1173,7 +2324,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.fan}
+                  value={extractedData.fan || ''}
                   onChange={(e) => handleFieldChange('fan', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-mono font-bold text-emerald-800"
                 />
@@ -1186,37 +2337,69 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.phoneNumber}
+                  value={extractedData.phoneNumber || ''}
                   onChange={(e) => handleFieldChange('phoneNumber', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 />
               </div>
 
-              {/* Date of Birth GC */}
+              {/* Date of Birth Eth / E.C. (1st) */}
               <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">
-                  Date of Birth (GC)
-                </label>
-                <input
-                  type="text"
-                  value={extractedData.dateOfBirth}
-                  onChange={(e) => handleFieldChange('dateOfBirth', e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
-                />
-              </div>
-
-              {/* Date of Birth Eth */}
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">
-                  Date of Birth (Eth / E.C.)
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700">
+                    Date of Birth (1st: E.C. / የኢትዮጵያ)
+                  </label>
+                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                    E.C. First
+                  </span>
+                </div>
                 <input
                   type="text"
                   value={extractedData.dateOfBirthEth || ''}
                   onChange={(e) => handleFieldChange('dateOfBirthEth', e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
+                  placeholder="DD/MM/YYYY (E.C.)"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium font-mono"
                 />
               </div>
+
+              {/* Date of Birth GC (2nd) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700">
+                    Date of Birth (2nd: G.C. / የፈረንጆች)
+                  </label>
+                  <span className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                    G.C. Second
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={extractedData.dateOfBirth || ''}
+                  onChange={(e) => handleFieldChange('dateOfBirth', e.target.value)}
+                  onBlur={(e) => {
+                    const formatted = formatGcyyyyMmDd(e.target.value);
+                    if (formatted && formatted !== e.target.value) {
+                      handleFieldChange('dateOfBirth', formatted);
+                    }
+                  }}
+                  placeholder="YYYY/MM/DD (G.C.)"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium font-mono"
+                />
+              </div>
+
+              {/* Card Output Order Confirmation Banner */}
+              <div className="md:col-span-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-700">Card DOB Order (E.C. | G.C.):</span>
+                  <span className="font-mono text-sm font-bold text-slate-900 bg-white px-2.5 py-0.5 rounded-lg border border-slate-300 shadow-2xs">
+                    {formatCardDualDate(extractedData.dateOfBirth, extractedData.dateOfBirthEth, 'eth_with_gc', { gcMonthName: false }) || '—'}
+                  </span>
+                </div>
+                <span className="text-[11px] text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  ✓ Ordered by E.C. then G.C.
+                </span>
+              </div>
+
 
               {/* Sex */}
               <div className="space-y-1">
@@ -1224,7 +2407,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                   Sex / ፆታ
                 </label>
                 <select
-                  value={extractedData.sex}
+                  value={extractedData.sex || 'Male'}
                   onChange={(e) => handleFieldChange('sex', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 >
@@ -1240,7 +2423,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.nationalityEnglish}
+                  value={extractedData.nationalityEnglish || ''}
                   onChange={(e) => handleFieldChange('nationalityEnglish', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 />
@@ -1253,7 +2436,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.regionEnglish}
+                  value={extractedData.regionEnglish || ''}
                   onChange={(e) => handleFieldChange('regionEnglish', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 />
@@ -1266,7 +2449,7 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.zoneEnglish}
+                  value={extractedData.zoneEnglish || ''}
                   onChange={(e) => handleFieldChange('zoneEnglish', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 />
@@ -1279,23 +2462,142 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
                 </label>
                 <input
                   type="text"
-                  value={extractedData.woredaEnglish}
+                  value={extractedData.woredaEnglish || ''}
                   onChange={(e) => handleFieldChange('woredaEnglish', e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
                 />
               </div>
 
-              {/* Expiry Date */}
+              {/* Date of Issue (Dual Calendar) */}
               <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700">
-                  Date of Expiry
-                </label>
-                <input
-                  type="text"
-                  value={extractedData.dateOfExpiry}
-                  onChange={(e) => handleFieldChange('dateOfExpiry', e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-medium"
-                />
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <span>Date of Issue (የተሰጠበት ቀን)</span>
+                    <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded font-medium">Auto-Updated Today</span>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-medium block">Gregorian (G.C.)</span>
+                    <input
+                      type="text"
+                      value={extractedData.dateOfIssue || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const eth = convertGcToEth(val);
+                        const exp = calculateExpiryFromIssue(val, eth || extractedData.dateOfIssueEth);
+                        setExtractedData((prev) => ({
+                          ...prev,
+                          dateOfIssue: val,
+                          dateOfIssueEth: eth || prev.dateOfIssueEth,
+                          ...(exp ? { dateOfExpiry: exp.expiryGc, dateOfExpiryEth: exp.expiryEth } : {}),
+                        }));
+                      }}
+                      onBlur={(e) => {
+                        const formatted = formatGcWith3LetterMonth(e.target.value);
+                        if (formatted && formatted !== e.target.value) {
+                          const eth = convertGcToEth(formatted) || extractedData.dateOfIssueEth;
+                          const exp = calculateExpiryFromIssue(formatted, eth);
+                          setExtractedData((prev) => ({
+                            ...prev,
+                            dateOfIssue: formatted,
+                            dateOfIssueEth: eth,
+                            ...(exp ? { dateOfExpiry: exp.expiryGc, dateOfExpiryEth: exp.expiryEth } : {}),
+                          }));
+                        }
+                      }}
+                      placeholder={getTodayIssueDates().issueDateGc}
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-medium block">Ethiopian (E.C.)</span>
+                    <input
+                      type="text"
+                      value={extractedData.dateOfIssueEth || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const gc = convertEthToGc(val);
+                        const exp = calculateExpiryFromIssue(gc || extractedData.dateOfIssue, val);
+                        setExtractedData((prev) => ({
+                          ...prev,
+                          dateOfIssueEth: val,
+                          dateOfIssue: gc || prev.dateOfIssue,
+                          ...(exp ? { dateOfExpiry: exp.expiryGc, dateOfExpiryEth: exp.expiryEth } : {}),
+                        }));
+                      }}
+                      onBlur={(e) => {
+                        const val = e.target.value;
+                        const gc = convertEthToGc(val) || extractedData.dateOfIssue;
+                        const exp = calculateExpiryFromIssue(gc, val);
+                        if (exp) {
+                          setExtractedData((prev) => ({
+                            ...prev,
+                            dateOfExpiry: exp.expiryGc,
+                            dateOfExpiryEth: exp.expiryEth,
+                          }));
+                        }
+                      }}
+                      placeholder={getTodayIssueDates().issueDateEth}
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Expiry Date (Dual Calendar - starts exactly from issued date +8 years) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700">
+                    Date of Expiry (የሚያበቃበት ቀን)
+                  </label>
+                  <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Starts from issue date (+8 yrs)
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-medium block">Ethiopian (E.C.)</span>
+                    <input
+                      type="text"
+                      value={extractedData.dateOfExpiryEth || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const gc = convertEthToGc(val);
+                        setExtractedData((prev) => ({
+                          ...prev,
+                          dateOfExpiryEth: val,
+                          dateOfExpiry: gc || prev.dateOfExpiry,
+                        }));
+                      }}
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-medium block">Gregorian (G.C.)</span>
+                    <input
+                      type="text"
+                      value={extractedData.dateOfExpiry || ''}
+                      onBlur={(e) => {
+                        const formatted = formatGcWith3LetterMonth(e.target.value);
+                        if (formatted && formatted !== e.target.value) {
+                          setExtractedData((prev) => ({ ...prev, dateOfExpiry: formatted }));
+                        }
+                      }}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const eth = convertGcToEth(val);
+                        setExtractedData((prev) => ({
+                          ...prev,
+                          dateOfExpiry: val,
+                          dateOfExpiryEth: eth || prev.dateOfExpiryEth,
+                        }));
+                      }}
+                      placeholder={getTodayIssueDates().expiryDateGc}
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 outline-none font-mono"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1304,14 +2606,29 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
               <span className="text-xs text-slate-500">
                 All fields ready for 300 DPI CR80 PVC composite
               </span>
-              <button
-                type="button"
-                onClick={handleApplyToStudio}
-                className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>Load Data Into Card Studio</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {onAddToBatchQueue && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sanitized = sanitizeIdCardData(extractedData);
+                      onAddToBatchQueue(sanitized, selectedFileName);
+                    }}
+                    className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                  >
+                    <Layers className="w-4 h-4" />
+                    <span>Add to Batch Queue</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleApplyToStudio}
+                  className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>Load Data Into Card Studio</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1338,6 +2655,41 @@ print("Run: python3 scripts/fayda_extractor.py <file.pdf>")`;
         initialCropBox={detectedQrBox || undefined}
         onApplyCrop={handleApplyCroppedQr}
       />
+
+      {/* Interactive Photo Studio & Lighting Laboratory Modal (Photo 1) */}
+      {isPhotoAdjustModalOpen && extractedData.photoUrl && (
+        <PhotoAdjustModal
+          isOpen={isPhotoAdjustModalOpen}
+          onClose={() => setIsPhotoAdjustModalOpen(false)}
+          originalPhotoUrl={extractedData.photoUrl}
+          applicantName={extractedData.fullNameEnglish || extractedData.fullNameAmharic || 'Applicant'}
+          initialTab="background"
+          onApplyPhoto={(newPhotoUrl) => {
+            setExtractedData((prev) => ({
+              ...prev,
+              photoUrl: newPhotoUrl,
+              secondaryPhotoUrl: newPhotoUrl,
+            }));
+            setIdData((prev) => ({
+              ...prev,
+              photoUrl: newPhotoUrl,
+              secondaryPhotoUrl: newPhotoUrl,
+            }));
+            setBgRemovedSuccessFeedback('✓ Photo 1 enhanced & saved!');
+            setTimeout(() => setBgRemovedSuccessFeedback(null), 3500);
+          }}
+        />
+      )}
+
+      {/* Auto-Crop ID Card Bounds Modal (Basic Color Detection) */}
+      {isAutoCropCardModalOpen && autoCropSourceUrl && (
+        <AutoCropCardModal
+          isOpen={isAutoCropCardModalOpen}
+          onClose={() => setIsAutoCropCardModalOpen(false)}
+          sourceImageUrl={autoCropSourceUrl}
+          onApplyCrop={handleApplyCardCrop}
+        />
+      )}
     </div>
   );
 };

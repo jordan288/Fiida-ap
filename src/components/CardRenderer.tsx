@@ -3,58 +3,10 @@ import QRCode from 'qrcode';
 import { CoordinatesConfig, IdCardData, TemplateConfig } from '../types';
 import { DEFAULT_TEMPLATE_CONFIG } from '../data/defaultData';
 import { cleanFieldText } from '../utils/textCleaner';
-import { formatCardDualDate } from '../utils/ethiopianCalendar';
-
-// Generates crisp SVG 1D barcode pattern for FAN / ID strings
-function renderBarcodeSvg(text: string, width: number = 380, height: number = 32, darkColor: string = '#0f172a') {
-  const clean = text.replace(/[^0-9A-Za-z]/g, '') || '4195043670692582';
-  const bars: { x: number; w: number }[] = [];
-  let currentX = 2;
-
-  // Start guard bars
-  bars.push({ x: currentX, w: 2 }); currentX += 4;
-  bars.push({ x: currentX, w: 1 }); currentX += 3;
-  bars.push({ x: currentX, w: 3 }); currentX += 5;
-
-  for (let i = 0; i < clean.length; i++) {
-    const code = clean.charCodeAt(i);
-    const p1 = (code % 3) + 1.2;
-    const p2 = ((code >> 1) % 3) + 1.2;
-    const p3 = ((code >> 2) % 3) + 1.2;
-    const space1 = ((code >> 3) % 2) + 2;
-    const space2 = ((code >> 4) % 2) + 2;
-
-    bars.push({ x: currentX, w: p1 }); currentX += p1 + space1;
-    bars.push({ x: currentX, w: p2 }); currentX += p2 + space2;
-    bars.push({ x: currentX, w: p3 }); currentX += p3 + 2.2;
-  }
-
-  // End guard bars
-  bars.push({ x: currentX, w: 3 }); currentX += 5;
-  bars.push({ x: currentX, w: 1 }); currentX += 3;
-  bars.push({ x: currentX, w: 2 }); currentX += 4;
-
-  const totalWidth = currentX;
-
-  return (
-    <svg 
-      viewBox={`0 0 ${totalWidth} ${height}`} 
-      className="w-full h-full block" 
-      preserveAspectRatio="none"
-    >
-      {bars.map((bar, idx) => (
-        <rect
-          key={idx}
-          x={bar.x}
-          y={0}
-          width={bar.w}
-          height={height}
-          fill={darkColor}
-        />
-      ))}
-    </svg>
-  );
-}
+import { formatCardDualDate, format7DigitSerial, getTodayIssueDates, calculateExpiryFromIssue } from '../utils/ethiopianCalendar';
+import { generateCode128SvgString } from '../utils/barcodeEngine';
+import { makeQrTransparentAndBorderless } from '../utils/qrPrecisionCropper';
+import { getFontFamilyCss } from '../utils/fontManager';
 
 interface CardRendererProps {
   side: 'front' | 'back';
@@ -65,11 +17,14 @@ interface CardRendererProps {
   highlightField?: string | null;
   onSelectField?: (fieldId: string) => void;
   onMoveField?: (fieldId: string, newX: number, newY: number) => void;
+  onResizeField?: (fieldId: string, newWidth: number, newHeight: number, newX?: number, newY?: number) => void;
   interactive?: boolean;
   elementId?: string;
   isExporting?: boolean;
   showGrid?: boolean;
   showCoordinatesBadges?: boolean;
+  showCornerMarks?: boolean;
+  photoColorMode?: 'color' | 'grayscale';
 }
 
 export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
@@ -81,21 +36,47 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
   highlightField,
   onSelectField,
   onMoveField,
+  onResizeField,
   interactive = false,
   elementId,
   isExporting = false,
   showGrid = false,
   showCoordinatesBadges = false,
+  showCornerMarks,
+  photoColorMode,
 }, ref) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [cleanQrUrl, setCleanQrUrl] = useState<string>('');
   const [draggingFieldId, setDraggingFieldId] = useState<string | null>(null);
+  const [resizingFieldId, setResizingFieldId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [hoveredFieldId, setHoveredFieldId] = useState<string | null>(null);
   const cardContainerRef = useRef<HTMLDivElement>(null);
 
   const tConfig = templateConfig || DEFAULT_TEMPLATE_CONFIG;
+  const cardFontFamilyCss = getFontFamilyCss(tConfig.cardFontFamily);
   const customBgUrl = side === 'front' ? tConfig.frontImageUrl : tConfig.backImageUrl;
   const hasCustomBg = Boolean(customBgUrl && customBgUrl.trim().length > 0);
+  const isCornerMarksActive = !isExporting && (showCornerMarks !== undefined ? showCornerMarks : (tConfig.showCornerMarks ?? false));
+  const isPhotoGrayscale = photoColorMode === 'grayscale' || data.photoColorMode === 'grayscale';
+
+  useEffect(() => {
+    let active = true;
+    if (data.qrCodeImageUrl) {
+      makeQrTransparentAndBorderless(data.qrCodeImageUrl)
+        .then((cleaned) => {
+          if (active) setCleanQrUrl(cleaned);
+        })
+        .catch(() => {
+          if (active) setCleanQrUrl(data.qrCodeImageUrl || '');
+        });
+    } else {
+      setCleanQrUrl('');
+    }
+    return () => {
+      active = false;
+    };
+  }, [data.qrCodeImageUrl]);
 
   useEffect(() => {
     // If the exact cropped QR code from the PDF document is available, do not generate one
@@ -108,11 +89,11 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
         const payload = data.qrData || `FAYDA:${data.fan}:${data.fullNameEnglish}:DOB=${data.dateOfBirth}`;
         const url = await QRCode.toDataURL(payload, {
           errorCorrectionLevel: 'M',
-          margin: 1,
+          margin: 0,
           width: 600,
           color: {
             dark: '#000000',
-            light: '#ffffff',
+            light: '#00000000', // completely transparent background - zero white border
           },
         });
         setQrDataUrl(url);
@@ -182,6 +163,59 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
     window.addEventListener('pointerup', handlePointerUp);
   };
 
+  // Setup Resizing / Stretching Listeners
+  const handleResizePointerDown = (
+    e: React.PointerEvent,
+    fieldId: string,
+    currentWidth: number,
+    currentHeight: number,
+    direction: 'horizontal' | 'vertical' | 'both',
+    currentX: number,
+    currentY: number
+  ) => {
+    if (!interactive || !onResizeField) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    onSelectField?.(fieldId);
+    setResizingFieldId(fieldId);
+
+    const startClientX = e.clientX;
+    const startClientY = e.clientY;
+    const startWidth = currentWidth;
+    const startHeight = currentHeight;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const deltaX = (moveEvent.clientX - startClientX) / scale;
+      const deltaY = (moveEvent.clientY - startClientY) / scale;
+
+      let newWidth = startWidth;
+      let newHeight = startHeight;
+
+      if (direction === 'horizontal' || direction === 'both') {
+        const maxW = canvasWidth - currentX;
+        newWidth = Math.max(50, Math.min(maxW, Math.round(startWidth + deltaX)));
+      }
+
+      if (direction === 'vertical' || direction === 'both') {
+        const maxH = canvasHeight - currentY;
+        newHeight = Math.max(20, Math.min(maxH, Math.round(startHeight + deltaY)));
+      }
+
+      onResizeField(fieldId, newWidth, newHeight);
+    };
+
+    const handlePointerUp = () => {
+      setResizingFieldId(null);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  };
+
   const bgColor = tConfig.backgroundColor || '#f6fbf9';
 
   return (
@@ -211,7 +245,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
         }}
       >
         {/* Custom Template Uploaded Image Layer */}
-        {hasCustomBg && (
+        {hasCustomBg ? (
           <div 
             className="absolute inset-0 pointer-events-none z-0 overflow-hidden"
             style={{ opacity: tConfig.opacity ?? 1.0 }}
@@ -228,71 +262,14 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               crossOrigin="anonymous"
             />
           </div>
-        )}
-
-        {/* Intricate Micro-pattern Guilloche Security Background (When enabled) */}
-        {tConfig.showBuiltinGuilloche && (
-          <svg
-            className="absolute inset-0 w-full h-full pointer-events-none z-0 opacity-45"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <defs>
-              <pattern id={`guilloche-${side}`} width="60" height="60" patternUnits="userSpaceOnUse">
-                <path
-                  d="M0,30 Q15,0 30,30 T60,30 M0,15 Q15,45 30,15 T60,15 M0,45 Q15,15 30,45 T60,45"
-                  fill="none"
-                  stroke={tConfig.presetId === 'golden_hologram' ? '#b45309' : tConfig.presetId === 'cyber_blue' ? '#0369a1' : '#059669'}
-                  strokeWidth="0.65"
-                  strokeOpacity="0.35"
-                />
-                <path
-                  d="M30,0 Q0,15 30,30 T30,60 M15,0 Q45,15 15,30 T15,60 M45,0 Q15,15 45,30 T45,60"
-                  fill="none"
-                  stroke={tConfig.presetId === 'golden_hologram' ? '#d97706' : tConfig.presetId === 'cyber_blue' ? '#0284c7' : '#d97706'}
-                  strokeWidth="0.5"
-                  strokeOpacity="0.3"
-                />
-              </pattern>
-              <linearGradient id={`rainbowFade-${side}`} x1="0%" y1="0%" x2="100%" y2="100%">
-                {tConfig.presetId === 'golden_hologram' ? (
-                  <>
-                    <stop offset="0%" stopColor="#fef08a" stopOpacity="0.75" />
-                    <stop offset="40%" stopColor="#fef3c7" stopOpacity="0.65" />
-                    <stop offset="80%" stopColor="#fed7aa" stopOpacity="0.55" />
-                    <stop offset="100%" stopColor="#fde047" stopOpacity="0.8" />
-                  </>
-                ) : tConfig.presetId === 'cyber_blue' ? (
-                  <>
-                    <stop offset="0%" stopColor="#e0f2fe" stopOpacity="0.8" />
-                    <stop offset="50%" stopColor="#f0f9ff" stopOpacity="0.6" />
-                    <stop offset="100%" stopColor="#bae6fd" stopOpacity="0.75" />
-                  </>
-                ) : (
-                  <>
-                    <stop offset="0%" stopColor="#d1fae5" stopOpacity="0.75" />
-                    <stop offset="35%" stopColor="#fef3c7" stopOpacity="0.65" />
-                    <stop offset="70%" stopColor="#fee2e2" stopOpacity="0.45" />
-                    <stop offset="100%" stopColor="#ecfdf5" stopOpacity="0.85" />
-                  </>
-                )}
-              </linearGradient>
-            </defs>
-            <rect width="100%" height="100%" fill={`url(#rainbowFade-${side})`} />
-            <rect width="100%" height="100%" fill={`url(#guilloche-${side})`} />
-            
-            {/* Security wavy waves */}
-            <path
-              d="M 0,200 C 300,100 600,450 1012,300 L 1012,638 L 0,638 Z"
-              fill={tConfig.presetId === 'golden_hologram' ? '#d97706' : tConfig.presetId === 'cyber_blue' ? '#0284c7' : '#059669'}
-              fillOpacity="0.05"
-            />
-            <path
-              d="M 0,380 C 400,280 700,550 1012,480 L 1012,638 L 0,638 Z"
-              fill={tConfig.presetId === 'golden_hologram' ? '#b45309' : tConfig.presetId === 'cyber_blue' ? '#0369a1' : '#d97706'}
-              fillOpacity="0.06"
-            />
-          </svg>
-        )}
+        ) : !isExporting ? (
+          /* Subtle blank canvas guide when no custom template is uploaded */
+          <div className="absolute inset-0 pointer-events-none z-0 flex items-center justify-center opacity-20 border-2 border-dashed border-emerald-800 m-2 rounded-xl">
+            <span className="text-xs font-mono font-bold text-emerald-950 uppercase tracking-wider">
+              [ Custom Template {side === 'front' ? 'Front' : 'Back'} Blank Canvas ]
+            </span>
+          </div>
+        ) : null}
 
         {/* Security & Calibration Coordinate Grid Overlay */}
         {showGrid && !isExporting && (
@@ -313,97 +290,232 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
           </svg>
         )}
 
+        {/* Template Corner Calibration & Registration Marks (Position Correction) */}
+        {isCornerMarksActive && (
+          <svg
+            className="absolute inset-0 w-full h-full pointer-events-none z-30 overflow-visible select-none"
+            viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <defs>
+              <filter id="cornerChipShadow" x="-30%" y="-30%" width="160%" height="160%">
+                <feDropShadow dx="0" dy="1" stdDeviation="2.5" floodColor="#020617" floodOpacity="0.8" />
+              </filter>
+            </defs>
+
+            {/* Template Perimeter Registration Guide Border */}
+            <rect
+              x="0.75"
+              y="0.75"
+              width={canvasWidth - 1.5}
+              height={canvasHeight - 1.5}
+              fill="none"
+              stroke="#10b981"
+              strokeWidth="1.5"
+              strokeDasharray="6 4"
+              strokeOpacity="0.65"
+            />
+
+            {/* 1. TOP-LEFT CORNER (0, 0) */}
+            <g id="corner-tl">
+              {/* Outer Contrast Frame */}
+              <path d="M 0,38 L 0,0 L 38,0" fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
+              {/* Inner Precision Emerald Arm */}
+              <path d="M 0,38 L 0,0 L 38,0" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
+              {/* Distance offset ticks (12px, 24px) */}
+              <line x1="12" y1="0" x2="12" y2="7" stroke="#10b981" strokeWidth="1.5" />
+              <line x1="24" y1="0" x2="24" y2="7" stroke="#10b981" strokeWidth="1.5" />
+              <line x1="0" y1="12" x2="7" y2="12" stroke="#10b981" strokeWidth="1.5" />
+              <line x1="0" y1="24" x2="7" y2="24" stroke="#10b981" strokeWidth="1.5" />
+              {/* 45 degree angle notch */}
+              <line x1="0" y1="0" x2="14" y2="14" stroke="#059669" strokeWidth="1.5" />
+              {/* Target Dot */}
+              <circle cx="0" cy="0" r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
+              <circle cx="0" cy="0" r="1.8" fill="#ffffff" />
+              {/* Coordinate Chip */}
+              <g transform="translate(10, 10)" filter="url(#cornerChipShadow)">
+                <rect x="0" y="0" width="76" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
+                <text x="38" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
+                  TL (0, 0)
+                </text>
+              </g>
+            </g>
+
+            {/* 2. TOP-RIGHT CORNER (canvasWidth, 0) */}
+            <g id="corner-tr">
+              {/* Outer Contrast Frame */}
+              <path d={`M ${canvasWidth - 38},0 L ${canvasWidth},0 L ${canvasWidth},38`} fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
+              {/* Inner Precision Emerald Arm */}
+              <path d={`M ${canvasWidth - 38},0 L ${canvasWidth},0 L ${canvasWidth},38`} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
+              {/* Distance offset ticks */}
+              <line x1={canvasWidth - 12} y1="0" x2={canvasWidth - 12} y2="7" stroke="#10b981" strokeWidth="1.5" />
+              <line x1={canvasWidth - 24} y1="0" x2={canvasWidth - 24} y2="7" stroke="#10b981" strokeWidth="1.5" />
+              <line x1={canvasWidth} y1="12" x2={canvasWidth - 7} y2="12" stroke="#10b981" strokeWidth="1.5" />
+              <line x1={canvasWidth} y1="24" x2={canvasWidth - 7} y2="24" stroke="#10b981" strokeWidth="1.5" />
+              {/* 45 degree angle notch */}
+              <line x1={canvasWidth} y1="0" x2={canvasWidth - 14} y2="14" stroke="#059669" strokeWidth="1.5" />
+              {/* Target Dot */}
+              <circle cx={canvasWidth} cy="0" r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
+              <circle cx={canvasWidth} cy="0" r="1.8" fill="#ffffff" />
+              {/* Coordinate Chip */}
+              <g transform={`translate(${canvasWidth - 105}, 10)`} filter="url(#cornerChipShadow)">
+                <rect x="0" y="0" width="95" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
+                <text x="47.5" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
+                  TR ({canvasWidth}, 0)
+                </text>
+              </g>
+            </g>
+
+            {/* 3. BOTTOM-LEFT CORNER (0, canvasHeight) */}
+            <g id="corner-bl">
+              {/* Outer Contrast Frame */}
+              <path d={`M 0,${canvasHeight - 38} L 0,${canvasHeight} L 38,${canvasHeight}`} fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
+              {/* Inner Precision Emerald Arm */}
+              <path d={`M 0,${canvasHeight - 38} L 0,${canvasHeight} L 38,${canvasHeight}`} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
+              {/* Distance offset ticks */}
+              <line x1="12" y1={canvasHeight} x2="12" y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
+              <line x1="24" y1={canvasHeight} x2="24" y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
+              <line x1="0" y1={canvasHeight - 12} x2="7" y2={canvasHeight - 12} stroke="#10b981" strokeWidth="1.5" />
+              <line x1="0" y1={canvasHeight - 24} x2="7" y2={canvasHeight - 24} stroke="#10b981" strokeWidth="1.5" />
+              {/* 45 degree angle notch */}
+              <line x1="0" y1={canvasHeight} x2="14" y2={canvasHeight - 14} stroke="#059669" strokeWidth="1.5" />
+              {/* Target Dot */}
+              <circle cx="0" cy={canvasHeight} r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
+              <circle cx="0" cy={canvasHeight} r="1.8" fill="#ffffff" />
+              {/* Coordinate Chip */}
+              <g transform={`translate(10, ${canvasHeight - 30})`} filter="url(#cornerChipShadow)">
+                <rect x="0" y="0" width="95" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
+                <text x="47.5" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
+                  BL (0, ${canvasHeight})
+                </text>
+              </g>
+            </g>
+
+            {/* 4. BOTTOM-RIGHT CORNER (canvasWidth, canvasHeight) */}
+            <g id="corner-br">
+              {/* Outer Contrast Frame */}
+              <path d={`M ${canvasWidth - 38},${canvasHeight} L ${canvasWidth},${canvasHeight} L ${canvasWidth},${canvasHeight - 38}`} fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
+              {/* Inner Precision Emerald Arm */}
+              <path d={`M ${canvasWidth - 38},${canvasHeight} L ${canvasWidth},${canvasHeight} L ${canvasWidth},${canvasHeight - 38}`} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
+              {/* Distance offset ticks */}
+              <line x1={canvasWidth - 12} y1={canvasHeight} x2={canvasWidth - 12} y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
+              <line x1={canvasWidth - 24} y1={canvasHeight} x2={canvasWidth - 24} y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
+              <line x1={canvasWidth} y1={canvasHeight - 12} x2={canvasWidth - 7} y2={canvasHeight - 12} stroke="#10b981" strokeWidth="1.5" />
+              <line x1={canvasWidth} y1={canvasHeight - 24} x2={canvasWidth - 7} y2={canvasHeight - 24} stroke="#10b981" strokeWidth="1.5" />
+              {/* 45 degree angle notch */}
+              <line x1={canvasWidth} y1={canvasHeight} x2={canvasWidth - 14} y2={canvasHeight - 14} stroke="#059669" strokeWidth="1.5" />
+              {/* Target Dot */}
+              <circle cx={canvasWidth} cy={canvasHeight} r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
+              <circle cx={canvasWidth} cy={canvasHeight} r="1.8" fill="#ffffff" />
+              {/* Coordinate Chip */}
+              <g transform={`translate(${canvasWidth - 120}, ${canvasHeight - 30})`} filter="url(#cornerChipShadow)">
+                <rect x="0" y="0" width="110" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
+                <text x="55" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
+                  BR ({canvasWidth}, ${canvasHeight})
+                </text>
+              </g>
+            </g>
+          </svg>
+        )}
+
         {side === 'front' ? (
           /* ================= FRONT SIDE ================= */
-          <div className="relative w-full h-full font-sans z-10">
-            {/* Top Header Layer (Toggleable) */}
-            {tConfig.showHeader && (
-              <div className="absolute top-5 left-10 right-10 flex items-center justify-between pointer-events-none">
-                {/* Ethiopian Flag */}
-                {tConfig.showFlag && (
-                  <div className="w-24 h-15 rounded shadow-sm border border-black/10 overflow-hidden flex flex-col relative">
-                    <div className="h-1/3 bg-[#009639]" />
-                    <div className="h-1/3 bg-[#FEDD00] relative flex items-center justify-center">
-                      <div className="w-6 h-6 rounded-full bg-[#002B7F] flex items-center justify-center -my-3">
-                        <span className="text-[#FEDD00] text-[10px] leading-none font-bold">★</span>
-                      </div>
-                    </div>
-                    <div className="h-1/3 bg-[#EF3340]" />
-                  </div>
-                )}
-
-                {/* Title Center */}
-                <div className="text-center flex-1 mx-4">
-                  <h1 className="text-[23px] font-bold text-emerald-950 tracking-tight leading-tight">
-                    የኢትዮጵያ ዲጂታል መታወቂያ ካርድ
-                  </h1>
-                  <h2 className="text-[19px] font-semibold text-gray-800 tracking-normal">
-                    Ethiopian Digital ID Card
-                  </h2>
-                </div>
-
-                {/* National ID Logo */}
-                <div className="flex items-center gap-2">
-                  <div className="w-13 h-13 rounded-full bg-cyan-900 border-2 border-cyan-700 flex items-center justify-center shadow-inner text-white font-bold text-xs p-1 text-center">
-                    <span className="text-[10px] leading-tight font-bold">National ID</span>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[12px] font-bold text-cyan-950 leading-tight">ብሔራዊ መታወቂያ</p>
-                    <p className="text-[10px] font-semibold text-gray-700 leading-tight">National ID</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Issue Date (Flexible: Vertical Left Margin or Horizontal) */}
+          <div className="relative w-full h-full z-10" style={{ fontFamily: cardFontFamilyCss }}>
+            {/* Dual Issue Dates (Separate Configurable Layers for G.C. & E.C. Ethiopian Calendar) */}
+            {/* Layer 1: Date of Issue (Gregorian Calendar / G.C.) */}
             <div 
-              className={`absolute tracking-wider flex items-center gap-2 transition-all p-1.5 rounded-lg ${
-                fields.dateOfIssueFront?.rotation === -90
-                  ? '-rotate-90 origin-left'
-                  : fields.dateOfIssueFront?.rotation === 90
-                  ? 'rotate-90 origin-left'
+              className={`absolute tracking-wider flex items-center gap-1.5 transition-all p-0 rounded-sm ${
+                (fields.dateOfIssueGc?.rotation ?? fields.dateOfIssueFront?.rotation ?? -90) === -90
+                  ? '-rotate-90 origin-top-left'
+                  : (fields.dateOfIssueGc?.rotation ?? fields.dateOfIssueFront?.rotation ?? -90) === 90
+                  ? 'rotate-90 origin-top-left'
                   : ''
               } ${
-                highlightField === 'dateOfIssueFront' ? 'ring-3 ring-emerald-500 bg-emerald-100/90 z-20 shadow-md' : ''
+                highlightField === 'dateOfIssueGc' || highlightField === 'dateOfIssueFront' ? 'ring-3 ring-emerald-500 bg-emerald-100/90 z-20 shadow-md' : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-emerald-400 hover:bg-emerald-50/60' : 'pointer-events-none'}`}
               style={{
-                left: `${fields.dateOfIssueFront?.x ?? 52}px`,
-                top: `${fields.dateOfIssueFront?.y ?? 330}px`,
-                fontSize: `${fields.dateOfIssueFront?.fontSize ?? 15}px`,
-                color: fields.dateOfIssueFront?.color ?? '#4b5563',
-                fontWeight: fields.dateOfIssueFront?.fontWeight ?? '600',
+                left: `${fields.dateOfIssueGc?.x ?? fields.dateOfIssueFront?.x ?? 52}px`,
+                top: `${fields.dateOfIssueGc?.y ?? fields.dateOfIssueFront?.y ?? 350}px`,
+                fontSize: `${fields.dateOfIssueGc?.fontSize ?? fields.dateOfIssueFront?.fontSize ?? 15}px`,
+                color: fields.dateOfIssueGc?.color ?? fields.dateOfIssueFront?.color ?? '#4b5563',
+                fontWeight: fields.dateOfIssueGc?.fontWeight ?? fields.dateOfIssueFront?.fontWeight ?? '600',
+                lineHeight: 1,
               }}
               onPointerDown={(e) =>
                 handlePointerDown(
                   e,
-                  'dateOfIssueFront',
-                  fields.dateOfIssueFront?.x ?? 52,
-                  fields.dateOfIssueFront?.y ?? 330
+                  fields.dateOfIssueGc ? 'dateOfIssueGc' : 'dateOfIssueFront',
+                  fields.dateOfIssueGc?.x ?? fields.dateOfIssueFront?.x ?? 52,
+                  fields.dateOfIssueGc?.y ?? fields.dateOfIssueFront?.y ?? 350
                 )
               }
-              onMouseEnter={() => setHoveredFieldId('dateOfIssueFront')}
+              onMouseEnter={() => setHoveredFieldId('dateOfIssueGc')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <span className="font-semibold text-gray-700">የተሰጠበት ቀን / Date of Issue:</span>
+                <span className="font-semibold text-gray-700 text-[11px]" style={{ fontFamily: cardFontFamilyCss }}>G.C:</span>
               )}
-              <span className="text-gray-950 font-bold font-mono">
-                {formatCardDualDate(cleanFieldText('dateOfIssue', data.dateOfIssue || '24/07/2024'), cleanFieldText('dateOfIssueEth', data.dateOfIssueEth || ''))}
+              <span className="text-gray-950 font-bold" style={{ fontFamily: cardFontFamilyCss }}>
+                {cleanFieldText('dateOfIssue', data.dateOfIssue || getTodayIssueDates().issueDateGc)}
               </span>
 
-              {(showCoordinatesBadges || highlightField === 'dateOfIssueFront' || hoveredFieldId === 'dateOfIssueFront') && !isExporting && (
-                <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-1.5">
-                  X:{fields.dateOfIssueFront?.x ?? 52} Y:{fields.dateOfIssueFront?.y ?? 330}
+              {(showCoordinatesBadges || highlightField === 'dateOfIssueGc' || hoveredFieldId === 'dateOfIssueGc') && !isExporting && (
+                <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1 py-0.2 rounded ml-1">
+                  GC X:{fields.dateOfIssueGc?.x ?? fields.dateOfIssueFront?.x ?? 52} Y:{fields.dateOfIssueGc?.y ?? fields.dateOfIssueFront?.y ?? 350}
                 </span>
               )}
             </div>
 
-            {/* Primary Applicant Photo Container (Left) */}
+            {/* Layer 2: Date of Issue (Ethiopian Calendar / E.C.) */}
+            <div 
+              className={`absolute tracking-wider flex items-center gap-1.5 transition-all p-0 rounded-sm ${
+                (fields.dateOfIssueEth?.rotation ?? -90) === -90
+                  ? '-rotate-90 origin-top-left'
+                  : (fields.dateOfIssueEth?.rotation ?? -90) === 90
+                  ? 'rotate-90 origin-top-left'
+                  : ''
+              } ${
+                highlightField === 'dateOfIssueEth' ? 'ring-3 ring-emerald-500 bg-emerald-100/90 z-20 shadow-md' : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-emerald-400 hover:bg-emerald-50/60' : 'pointer-events-none'}`}
+              style={{
+                left: `${fields.dateOfIssueEth?.x ?? 52}px`,
+                top: `${fields.dateOfIssueEth?.y ?? 220}px`,
+                fontSize: `${fields.dateOfIssueEth?.fontSize ?? 15}px`,
+                color: fields.dateOfIssueEth?.color ?? '#4b5563',
+                fontWeight: fields.dateOfIssueEth?.fontWeight ?? '600',
+                lineHeight: 1,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e,
+                  'dateOfIssueEth',
+                  fields.dateOfIssueEth?.x ?? 52,
+                  fields.dateOfIssueEth?.y ?? 220
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('dateOfIssueEth')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <span className="font-semibold text-gray-700 text-[11px]" style={{ fontFamily: cardFontFamilyCss }}>E.C:</span>
+              )}
+              <span className="text-gray-950 font-bold" style={{ fontFamily: cardFontFamilyCss }}>
+                {cleanFieldText('dateOfIssueEth', data.dateOfIssueEth || getTodayIssueDates().issueDateEth)}
+              </span>
+
+              {(showCoordinatesBadges || highlightField === 'dateOfIssueEth' || hoveredFieldId === 'dateOfIssueEth') && !isExporting && (
+                <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1 py-0.2 rounded ml-1">
+                  EC X:{fields.dateOfIssueEth?.x ?? 52} Y:{fields.dateOfIssueEth?.y ?? 220}
+                </span>
+              )}
+            </div>
+
+            {/* Primary Applicant Photo Container (Left) - Frameless */}
             <div
-              className={`absolute border-2 overflow-hidden transition-all shadow-md group ${
+              className={`absolute overflow-hidden transition-all group bg-transparent ${
                 highlightField === 'photoFront'
-                  ? 'ring-4 ring-emerald-500 border-emerald-600 z-20'
-                  : 'border-emerald-800/30'
+                  ? 'ring-4 ring-emerald-500 z-20 shadow-lg'
+                  : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${media.photoFront.x}px`,
@@ -411,6 +523,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 width: `${media.photoFront.width}px`,
                 height: `${media.photoFront.height}px`,
                 borderRadius: `${media.photoFront.borderRadius || 14}px`,
+                backgroundColor: 'transparent',
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'photoFront', media.photoFront.x, media.photoFront.y)
@@ -422,8 +535,13 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 <img
                   src={data.photoUrl}
                   alt="Applicant Primary Portrait"
-                  className="w-full h-full object-cover pointer-events-none"
-                  crossOrigin="anonymous"
+                  className={`w-full h-full object-cover pointer-events-none ${
+                    isPhotoGrayscale ? 'grayscale contrast-115' : ''
+                  }`}
+                  style={{
+                    imageRendering: '-webkit-optimize-contrast',
+                  }}
+                  crossOrigin={data.photoUrl.startsWith('data:') || data.photoUrl.startsWith('blob:') ? undefined : 'anonymous'}
                 />
               ) : (
                 <div className="w-full h-full bg-gray-200 flex flex-col items-center justify-center text-gray-400">
@@ -441,20 +559,18 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Second Photo Container (Bottom Right Security Portrait) */}
+            {/* Second Photo Container (Bottom Right Security Portrait) - Direct copy from larger photo, no second layer */}
             {tConfig.showSecondaryPhoto !== false && (
               <div
-                className={`absolute overflow-hidden transition-all group ${
+                className={`absolute overflow-hidden transition-all group bg-transparent ${
                   tConfig.secondaryPhotoStyle === 'ghost'
-                    ? 'opacity-85 grayscale contrast-125 mix-blend-multiply border border-emerald-700/50 bg-emerald-50/30 shadow-xs'
-                    : tConfig.secondaryPhotoStyle === 'grayscale'
-                    ? 'grayscale contrast-120 border-2 border-slate-500 bg-white/50 shadow-xs'
-                    : tConfig.secondaryPhotoStyle === 'goldBorder'
-                    ? 'border-2 border-amber-500 ring-1 ring-amber-300 shadow-md'
-                    : 'border-2 border-slate-300 shadow-xs'
+                    ? 'opacity-85 grayscale contrast-125'
+                    : tConfig.secondaryPhotoStyle === 'grayscale' || isPhotoGrayscale
+                    ? 'grayscale contrast-120'
+                    : ''
                 } ${
-                  highlightField === 'photoFrontSecondary'
-                    ? 'ring-4 ring-emerald-500 border-emerald-600 z-20 shadow-lg'
+                  highlightField === 'photoFrontSecondary' && !isExporting
+                    ? 'ring-2 ring-emerald-500/70 z-20 shadow-md'
                     : ''
                 } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
                 style={{
@@ -462,7 +578,11 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   top: `${media.photoFrontSecondary?.y ?? 435}px`,
                   width: `${media.photoFrontSecondary?.width ?? 145}px`,
                   height: `${media.photoFrontSecondary?.height ?? 175}px`,
-                  borderRadius: `${media.photoFrontSecondary?.borderRadius ?? 12}px`,
+                  borderRadius: `${media.photoFrontSecondary?.borderRadius ?? 0}px`,
+                  border: 'none',
+                  outline: 'none',
+                  boxShadow: 'none',
+                  backgroundColor: 'transparent',
                   opacity: media.photoFrontSecondary?.opacity ?? (tConfig.secondaryPhotoStyle === 'ghost' ? 0.85 : 1.0),
                 }}
                 onPointerDown={(e) =>
@@ -476,12 +596,13 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 onMouseEnter={() => setHoveredFieldId('photoFrontSecondary')}
                 onMouseLeave={() => setHoveredFieldId(null)}
               >
-                {data.secondaryPhotoUrl || data.photoUrl ? (
+                {data.photoUrl || data.secondaryPhotoUrl ? (
                   <img
-                    src={data.secondaryPhotoUrl || data.photoUrl}
-                    alt="Applicant Second Security Portrait"
+                    src={data.photoUrl || data.secondaryPhotoUrl}
+                    alt="Applicant Second Security Portrait (Copy of Main Photo)"
                     className="w-full h-full object-cover pointer-events-none"
-                    crossOrigin="anonymous"
+                    style={{ border: 'none', outline: 'none' }}
+                    crossOrigin={(data.photoUrl || data.secondaryPhotoUrl)?.startsWith('data:') || (data.photoUrl || data.secondaryPhotoUrl)?.startsWith('blob:') ? undefined : 'anonymous'}
                   />
                 ) : (
                   <div className="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-gray-400 text-center p-1">
@@ -495,13 +616,14 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   <div className="absolute top-1 left-1 bg-slate-900/90 backdrop-blur-xs text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
                     <span className="text-emerald-400">P2 X:{media.photoFrontSecondary?.x ?? 825}</span>
                     <span className="text-cyan-400">Y:{media.photoFrontSecondary?.y ?? 435}</span>
+                    <span className="text-amber-300">W:{media.photoFrontSecondary?.width ?? 145} H:{media.photoFrontSecondary?.height ?? 175}</span>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Watermark Emblem on Right Side (Toggleable) */}
-            {tConfig.showEmblem && (
+            {/* Watermark Emblem on Right Side (Toggleable - hidden if custom template is loaded) */}
+            {tConfig.showEmblem && !hasCustomBg && (
               <div className="absolute right-12 top-36 pointer-events-none opacity-20 flex flex-col items-center">
                 <svg width="220" height="220" viewBox="0 0 100 100" fill="none" stroke="#059669" strokeWidth="2">
                   <polygon points="50,5 64,38 98,38 70,59 81,92 50,72 19,92 30,59 2,38 36,38" />
@@ -515,14 +637,14 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 
             {/* Full Name Amharic */}
             <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
+              className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'fullNameAmharic'
                   ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
                   : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${fields.fullNameAmharic.x}px`,
-                top: `${fields.fullNameAmharic.y - (tConfig.showFieldLabels ? 22 : 0)}px`,
+                top: `${fields.fullNameAmharic.y}px`,
                 maxWidth: `${fields.fullNameAmharic.maxWidth || 450}px`,
               }}
               onPointerDown={(e) =>
@@ -532,18 +654,19 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>ሙሉ ስም</span>
-                  {(showCoordinatesBadges || highlightField === 'fullNameAmharic' || hoveredFieldId === 'fullNameAmharic') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.fullNameAmharic.x} Y:{fields.fullNameAmharic.y}
-                    </span>
-                  )}
+                <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  ሙሉ ስም
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'fullNameAmharic' || hoveredFieldId === 'fullNameAmharic') && !isExporting && (
+                <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.fullNameAmharic.x} Y:{fields.fullNameAmharic.y}
                 </div>
               )}
               <div 
                 className="font-bold leading-tight"
                 style={{
+                  fontFamily: cardFontFamilyCss,
                   fontSize: `${fields.fullNameAmharic.fontSize}px`,
                   color: fields.fullNameAmharic.color || '#111827',
                 }}
@@ -554,37 +677,38 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 
             {/* Full Name English */}
             <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
+              className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'fullNameEnglish'
                   ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
                   : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
-                left: `${fields.fullNameEnglish.x}px`,
-                top: `${fields.fullNameEnglish.y - (tConfig.showFieldLabels ? 22 : 0)}px`,
-                maxWidth: `${fields.fullNameEnglish.maxWidth || 450}px`,
+                left: `${fields.fullNameEnglish?.x ?? fields.fullNameAmharic.x}px`,
+                top: `${fields.fullNameEnglish?.y ?? (fields.fullNameAmharic.y + 33)}px`,
+                maxWidth: `${fields.fullNameEnglish?.maxWidth || 450}px`,
               }}
               onPointerDown={(e) =>
-                handlePointerDown(e, 'fullNameEnglish', fields.fullNameEnglish.x, fields.fullNameEnglish.y)
+                handlePointerDown(e, 'fullNameEnglish', fields.fullNameEnglish?.x ?? fields.fullNameAmharic.x, fields.fullNameEnglish?.y ?? (fields.fullNameAmharic.y + 33))
               }
               onMouseEnter={() => setHoveredFieldId('fullNameEnglish')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>Full Name</span>
-                  {(showCoordinatesBadges || highlightField === 'fullNameEnglish' || hoveredFieldId === 'fullNameEnglish') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.fullNameEnglish.x} Y:{fields.fullNameEnglish.y}
-                    </span>
-                  )}
+                <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  Full Name
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'fullNameEnglish' || hoveredFieldId === 'fullNameEnglish') && !isExporting && (
+                <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.fullNameEnglish?.x ?? fields.fullNameAmharic.x} Y:{fields.fullNameEnglish?.y ?? (fields.fullNameAmharic.y + 33)}
                 </div>
               )}
               <div 
                 className="font-semibold leading-tight"
                 style={{
-                  fontSize: `${fields.fullNameEnglish.fontSize}px`,
-                  color: fields.fullNameEnglish.color || '#1f2937',
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.fullNameEnglish?.fontSize ?? 22}px`,
+                  color: fields.fullNameEnglish?.color || '#1f2937',
                 }}
               >
                 {cleanFieldText('fullNameEnglish', data.fullNameEnglish)}
@@ -593,12 +717,12 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 
             {/* Date of Birth */}
             <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
+              className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'dateOfBirth' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${fields.dateOfBirth.x}px`,
-                top: `${fields.dateOfBirth.y - (tConfig.showFieldLabels ? 20 : 0)}px`,
+                top: `${fields.dateOfBirth.y}px`,
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'dateOfBirth', fields.dateOfBirth.x, fields.dateOfBirth.y)
@@ -607,34 +731,41 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>የትውልድ ቀን | Date of Birth</span>
-                  {(showCoordinatesBadges || highlightField === 'dateOfBirth' || hoveredFieldId === 'dateOfBirth') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.dateOfBirth.x} Y:{fields.dateOfBirth.y}
-                    </span>
-                  )}
+                <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  የትውልድ ቀን | Date of Birth
                 </div>
               )}
+              {(showCoordinatesBadges || highlightField === 'dateOfBirth' || hoveredFieldId === 'dateOfBirth') && !isExporting && (
+                <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.dateOfBirth.x} Y:{fields.dateOfBirth.y}
+                </div>
+              )}
+              {/* Permanently render the read text for Date of Birth (E.C. | G.C.) */}
               <div 
-                className="font-bold font-mono"
+                className="font-bold"
                 style={{
+                  fontFamily: cardFontFamilyCss,
                   fontSize: `${fields.dateOfBirth.fontSize}px`,
                   color: fields.dateOfBirth.color || '#111827',
                 }}
               >
-                {formatCardDualDate(cleanFieldText('dateOfBirth', data.dateOfBirth), cleanFieldText('dateOfBirthEth', data.dateOfBirthEth || ''))}
+                {formatCardDualDate(
+                  cleanFieldText('dateOfBirth', data.dateOfBirth),
+                  cleanFieldText('dateOfBirthEth', data.dateOfBirthEth || ''),
+                  'eth_with_gc',
+                  { gcMonthName: false }
+                )}
               </div>
             </div>
 
             {/* Sex */}
             <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
+              className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'sex' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${fields.sex.x}px`,
-                top: `${fields.sex.y - (tConfig.showFieldLabels ? 20 : 0)}px`,
+                top: `${fields.sex.y}px`,
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'sex', fields.sex.x, fields.sex.y)
@@ -643,38 +774,39 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>ፆታ | Sex</span>
-                  {(showCoordinatesBadges || highlightField === 'sex' || hoveredFieldId === 'sex') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.sex.x} Y:{fields.sex.y}
-                    </span>
-                  )}
+                <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  ፆታ | Sex
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'sex' || hoveredFieldId === 'sex') && !isExporting && (
+                <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.sex.x} Y:{fields.sex.y}
                 </div>
               )}
               <div 
                 className="font-bold"
                 style={{
+                  fontFamily: cardFontFamilyCss,
                   fontSize: `${fields.sex.fontSize}px`,
                   color: fields.sex.color || '#111827',
                 }}
               >
-                {cleanFieldText('sex', data.sex) === 'Male' || data.sex === 'Male'
-                  ? 'ወንድ / M'
-                  : cleanFieldText('sex', data.sex) === 'Female' || data.sex === 'Female'
-                  ? 'ሴት / F'
+                {cleanFieldText('sex', data.sex) === 'Male' || data.sex === 'Male' || String(data.sex).toLowerCase() === 'm' || data.sex === 'ወንድ'
+                  ? 'ወንድ / Male'
+                  : cleanFieldText('sex', data.sex) === 'Female' || data.sex === 'Female' || String(data.sex).toLowerCase() === 'f' || data.sex === 'ሴት'
+                  ? 'ሴት / Female'
                   : cleanFieldText('sex', data.sex)}
               </div>
             </div>
 
             {/* Date of Expiry */}
             <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
+              className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'dateOfExpiry' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${fields.dateOfExpiry.x}px`,
-                top: `${fields.dateOfExpiry.y - (tConfig.showFieldLabels ? 20 : 0)}px`,
+                top: `${fields.dateOfExpiry.y}px`,
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'dateOfExpiry', fields.dateOfExpiry.x, fields.dateOfExpiry.y)
@@ -683,42 +815,48 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>የሚያበቃበት ቀን | Date of Expiry</span>
-                  {(showCoordinatesBadges || highlightField === 'dateOfExpiry' || hoveredFieldId === 'dateOfExpiry') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.dateOfExpiry.x} Y:{fields.dateOfExpiry.y}
-                    </span>
-                  )}
+                <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  የሚያበቃበት ቀን | Date of Expiry
                 </div>
               )}
+              {(showCoordinatesBadges || highlightField === 'dateOfExpiry' || hoveredFieldId === 'dateOfExpiry') && !isExporting && (
+                <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.dateOfExpiry.x} Y:{fields.dateOfExpiry.y}
+                </div>
+              )}
+              {/* Permanently render read text for Date of Expiry (starts exactly from the issued date +8 years) */}
               <div 
-                className="font-bold font-mono"
+                className="font-bold"
                 style={{
+                  fontFamily: cardFontFamilyCss,
                   fontSize: `${fields.dateOfExpiry.fontSize}px`,
                   color: fields.dateOfExpiry.color || '#111827',
                 }}
               >
-                {cleanFieldText('dateOfExpiry', data.dateOfExpiry)}
+                {(() => {
+                  const issueGc = cleanFieldText('dateOfIssue', data.dateOfIssue || getTodayIssueDates().issueDateGc);
+                  const issueEth = cleanFieldText('dateOfIssueEth', data.dateOfIssueEth || getTodayIssueDates().issueDateEth);
+                  const calculated = calculateExpiryFromIssue(issueGc, issueEth);
+                  const expGc = calculated?.expiryGc || cleanFieldText('dateOfExpiry', data.dateOfExpiry);
+                  const expEth = calculated?.expiryEth || cleanFieldText('dateOfExpiryEth', data.dateOfExpiryEth || '');
+                  return formatCardDualDate(expGc, expEth, 'eth_with_gc', { gcMonthName: true });
+                })()}
               </div>
             </div>
 
-            {/* Top / Bottom FAN & Barcode Section (Cut/Toggleable) */}
-            {(tConfig.showFrontBarcode || tConfig.showFrontFan || tConfig.showFanContainerBox) && (
+            {/* Front Side: FAN Card Number (Pure Digits, No Spaces, No White Background, No Border) */}
+            {(tConfig.showFrontFan || tConfig.showFanContainerBox) && (
               <div
-                className={`absolute flex flex-col items-center justify-center transition-all ${
-                  tConfig.showFanContainerBox 
-                    ? 'bg-white/95 backdrop-blur-xs border border-gray-300/90 rounded-2xl px-5 py-2.5 shadow-sm' 
-                    : 'p-1'
-                } ${
-                  highlightField === 'fan' || highlightField === 'frontBarcode'
+                className={`absolute flex items-center justify-center transition-all bg-transparent border-0 shadow-none ${
+                  highlightField === 'fan'
                     ? 'ring-4 ring-emerald-500 border-emerald-600 z-20 shadow-lg'
                     : ''
                 } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
                 style={{
                   left: `${fields.fan.x - 70}px`,
-                  top: `${fields.fan.y - (tConfig.showFrontBarcode ? (tConfig.showFanContainerBox ? 52 : 35) : (tConfig.showFanContainerBox ? 28 : 10))}px`,
-                  width: tConfig.showFanContainerBox ? (tConfig.showSecondaryPhoto ? '465px' : '540px') : 'auto',
+                  top: `${fields.fan.y - 10}px`,
+                  width: `${tConfig.showSecondaryPhoto ? 465 : 540}px`,
+                  height: '60px',
                 }}
                 onPointerDown={(e) =>
                   handlePointerDown(e, 'fan', fields.fan.x, fields.fan.y)
@@ -726,254 +864,738 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 onMouseEnter={() => setHoveredFieldId('fan')}
                 onMouseLeave={() => setHoveredFieldId(null)}
               >
-                {/* FAN Label and Digits on TOP of barcode */}
                 {tConfig.showFrontFan && (
-                  <div className="w-full flex items-center justify-between gap-3 mb-1">
-                    {tConfig.showFanContainerBox && tConfig.showFieldLabels && (
-                      <div className="text-left mr-2">
-                        <div className="text-[11px] font-bold text-gray-500 leading-none">ካርድ ቁጥር</div>
-                        <div className="text-[12px] font-extrabold text-gray-900 leading-none mt-0.5">FAN</div>
-                      </div>
-                    )}
-                    <div 
-                      className="font-mono font-extrabold tracking-[0.22em] text-gray-950 flex-1 text-center"
-                      style={{
-                        fontSize: `${fields.fan.fontSize}px`,
-                        color: fields.fan.color || '#0f172a',
-                      }}
-                    >
-                      {cleanFieldText('fan', data.fan) || '4195 0436 7069 2582'}
-                    </div>
-                  </div>
-                )}
-
-                {/* 1D Barcode BELOW the FAN digits */}
-                {tConfig.showFrontBarcode && (
-                  <div className="w-full h-8 px-2 flex items-center justify-center overflow-hidden">
-                    {data.barcodeImageUrl ? (
-                      <img
-                        src={data.barcodeImageUrl}
-                        alt="Fayda 1D Barcode"
-                        className="w-full h-full object-contain"
-                        crossOrigin="anonymous"
-                      />
-                    ) : (
-                      renderBarcodeSvg(cleanFieldText('fan', data.fan) || '4195043670692582', 400, 32, fields.fan.color || '#0f172a')
-                    )}
+                  <div 
+                    className="font-extrabold tracking-normal text-gray-950 w-full text-center select-all"
+                    style={{
+                      fontFamily: cardFontFamilyCss,
+                      fontSize: `${fields.fan.fontSize}px`,
+                      color: fields.fan.color || '#0f172a',
+                      letterSpacing: '0px',
+                    }}
+                  >
+                    {(cleanFieldText('fan', data.fan) || data.fan || '4195043670692582').replace(/\s+/g, '')}
                   </div>
                 )}
 
                 {(showCoordinatesBadges || highlightField === 'fan' || hoveredFieldId === 'fan') && !isExporting && (
-                  <div className="absolute -top-3 right-2 bg-slate-900 text-white text-[9px] font-mono px-1.5 py-0.2 rounded shadow-md flex items-center gap-1">
+                  <div className="absolute -top-3 right-2 bg-slate-900 text-white text-[9px] font-mono px-1.5 py-0.2 rounded shadow-md flex items-center gap-1 pointer-events-none">
                     <span>FAN X:{fields.fan.x}</span>
                     <span>Y:{fields.fan.y}</span>
-                    {tConfig.showFrontBarcode && <span className="text-emerald-400 font-bold">[Barcode ON]</span>}
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* Front Side: 1D Barcode (Fully Independent Position, Stretch & Dimensions Adjustability) */}
+            {tConfig.showFrontBarcode !== false && (
+              <div 
+                className={`absolute flex items-center justify-center transition-all ${
+                  highlightField === 'frontBarcode'
+                    ? 'ring-4 ring-emerald-500 border-emerald-600 z-30 shadow-lg'
+                    : ''
+                } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
+                style={{
+                  left: `${media.frontBarcode?.x ?? 485}px`,
+                  top: `${media.frontBarcode?.y ?? 520}px`,
+                  width: `${media.frontBarcode?.width ?? 440}px`,
+                  height: `${media.frontBarcode?.height ?? 40}px`,
+                  zIndex: 25,
+                }}
+                onPointerDown={(e) => {
+                  handlePointerDown(e, 'frontBarcode', media.frontBarcode?.x ?? 485, media.frontBarcode?.y ?? 520);
+                }}
+                onMouseEnter={() => setHoveredFieldId('frontBarcode')}
+                onMouseLeave={() => setHoveredFieldId(null)}
+              >
+                {/* Inner clipped surface for barcode bars: Always prioritize the exact cutted barcode from the slip */}
+                <div
+                  className="w-full h-full overflow-hidden flex items-center justify-center"
+                  style={{
+                    borderRadius: `${media.frontBarcode?.borderRadius ?? 4}px`,
+                    opacity: media.frontBarcode?.opacity ?? 1.0,
+                  }}
+                >
+                  {data.barcodeImageUrl ? (
+                    <img
+                      src={data.barcodeImageUrl}
+                      alt="Exact Cutted Barcode"
+                      className="w-full h-full pointer-events-none transition-transform"
+                      style={{
+                        objectFit: media.frontBarcode?.fit === 'contain' ? 'contain' : 'fill',
+                        transform: media.frontBarcode?.scaleX ? `scaleX(${media.frontBarcode.scaleX})` : undefined,
+                        transformOrigin: 'center center',
+                        imageRendering: '-webkit-optimize-contrast',
+                      }}
+                      crossOrigin="anonymous"
+                    />
+                  ) : (
+                    <div
+                      className="w-full h-full flex items-center justify-center bg-white overflow-hidden transition-transform"
+                      style={{
+                        transform: media.frontBarcode?.scaleX ? `scaleX(${media.frontBarcode.scaleX})` : undefined,
+                        transformOrigin: 'center center',
+                      }}
+                      dangerouslySetInnerHTML={{
+                        __html: generateCode128SvgString(
+                          (cleanFieldText('fan', data.fan) || data.fan || '4195043670692582').replace(/\s+/g, ''),
+                          media.frontBarcode?.width ?? 440,
+                          media.frontBarcode?.height ?? 40,
+                          fields.fan?.color || '#0f172a'
+                        ),
+                      }}
+                    />
+                  )}
+                </div>
+
+                {/* Coordinates & Dimensions Badge */}
+                {(showCoordinatesBadges || highlightField === 'frontBarcode' || hoveredFieldId === 'frontBarcode') && !isExporting && (
+                  <div className="absolute -top-3.5 left-1 bg-slate-900/90 backdrop-blur-xs text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
+                    <span className="text-emerald-400">Barcode X:{media.frontBarcode?.x ?? 485}</span>
+                    <span className="text-cyan-400">Y:{media.frontBarcode?.y ?? 520}</span>
+                    <span className="text-amber-300">W:{media.frontBarcode?.width ?? 440} H:{media.frontBarcode?.height ?? 40}</span>
+                  </div>
+                )}
+
+                {/* Interactive Stretch & Contract Controls on Card (Just like Back FAN Cut) */}
+                {interactive && !isExporting && (highlightField === 'frontBarcode' || hoveredFieldId === 'frontBarcode') && (
+                  <>
+                    {/* Right Edge: Horizontal Stretch & Contract Handle */}
+                    <div
+                      className="absolute -right-2.5 top-1/2 -translate-y-1/2 w-5 h-8 cursor-ew-resize flex items-center justify-center z-40 group"
+                      title="Drag to Stretch / Contract Barcode Width (የባርኮድ የተዘረጋ ስፋት)"
+                      onPointerDown={(e) =>
+                        handleResizePointerDown(
+                          e,
+                          'frontBarcode',
+                          media.frontBarcode?.width ?? 440,
+                          media.frontBarcode?.height ?? 40,
+                          'horizontal',
+                          media.frontBarcode?.x ?? 485,
+                          media.frontBarcode?.y ?? 520
+                        )
+                      }
+                    >
+                      <div className="w-2.5 h-6 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-110 rounded-full border-2 border-white shadow-md flex items-center justify-center transition-transform">
+                        <div className="w-0.5 h-2.5 bg-white rounded-full"></div>
+                      </div>
+                      <span className="absolute -top-7 right-0 bg-slate-900 text-emerald-300 text-[9px] font-mono px-1.5 py-0.5 rounded shadow whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                        ↔ Stretch Barcode Width
+                      </span>
+                    </div>
+
+                    {/* Bottom Edge: Vertical Resize Handle */}
+                    <div
+                      className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 h-5 w-8 cursor-ns-resize flex items-center justify-center z-40 group"
+                      title="Drag to Resize Barcode Height"
+                      onPointerDown={(e) =>
+                        handleResizePointerDown(
+                          e,
+                          'frontBarcode',
+                          media.frontBarcode?.width ?? 440,
+                          media.frontBarcode?.height ?? 40,
+                          'vertical',
+                          media.frontBarcode?.x ?? 485,
+                          media.frontBarcode?.y ?? 520
+                        )
+                      }
+                    >
+                      <div className="h-2.5 w-6 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-110 rounded-full border-2 border-white shadow-md flex items-center justify-center transition-transform">
+                        <div className="h-0.5 w-2.5 bg-white rounded-full"></div>
+                      </div>
+                      <span className="absolute -bottom-7 bg-slate-900 text-emerald-300 text-[9px] font-mono px-1.5 py-0.5 rounded shadow whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                        ↕ Resize Barcode Height
+                      </span>
+                    </div>
+
+                    {/* Bottom-Right Corner: Diagonal Stretch Handle */}
+                    <div
+                      className="absolute -right-2 -bottom-2 w-5 h-5 cursor-nwse-resize bg-emerald-600 hover:bg-emerald-500 rounded-br-lg rounded-tl-sm border-2 border-white shadow-md flex items-center justify-center text-white text-[10px] font-bold z-50 transition-transform hover:scale-110"
+                      title="Drag to Stretch Barcode Width & Height"
+                      onPointerDown={(e) =>
+                        handleResizePointerDown(
+                          e,
+                          'frontBarcode',
+                          media.frontBarcode?.width ?? 440,
+                          media.frontBarcode?.height ?? 40,
+                          'both',
+                          media.frontBarcode?.x ?? 485,
+                          media.frontBarcode?.y ?? 520
+                        )
+                      }
+                    >
+                      ⤡
+                    </div>
+
+                    {/* Floating Mini Stretch Quick-Toolbar */}
+                    <div 
+                      className="absolute -top-7.5 left-0 flex items-center gap-1.5 bg-slate-900/95 text-white px-2 py-0.5 rounded-md shadow-lg border border-slate-700/80 z-50 text-[10px] font-mono pointer-events-auto"
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      <span className="text-emerald-400 font-bold">
+                        Stretch: {media.frontBarcode?.width ?? 440}px
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onResizeField?.('frontBarcode', Math.min(canvasWidth - (media.frontBarcode?.x ?? 485), (media.frontBarcode?.width ?? 440) + 20), media.frontBarcode?.height ?? 40)}
+                        className="px-1.5 py-0.2 bg-emerald-700 hover:bg-emerald-600 text-white rounded font-bold transition-colors cursor-pointer"
+                        title="Stretch Barcode Width +20px"
+                      >
+                        +20px
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onResizeField?.('frontBarcode', Math.max(100, (media.frontBarcode?.width ?? 440) - 20), media.frontBarcode?.height ?? 40)}
+                        className="px-1.5 py-0.2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded font-bold transition-colors cursor-pointer"
+                        title="Contract Barcode Width -20px"
+                      >
+                        -20px
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             )}
           </div>
         ) : (
           /* ================= BACK SIDE ================= */
-          <div className="relative w-full h-full font-sans z-10">
+          <div className="relative w-full h-full z-10" style={{ fontFamily: cardFontFamilyCss }}>
             {/* Top Left: Phone Number */}
             <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
-                highlightField === 'phoneNumber' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
-              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              id="field-phoneNumber"
+              className={`absolute transition-all rounded-sm p-0 ${
+                highlightField === 'phoneNumber' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 ring-offset-1 z-20 shadow-md' : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400 hover:ring-offset-1' : ''}`}
               style={{
-                left: `${fields.phoneNumber.x}px`,
-                top: `${fields.phoneNumber.y - (tConfig.showFieldLabels ? 20 : 0)}px`,
+                left: `${fields.phoneNumber?.x ?? 45}px`,
+                top: `${fields.phoneNumber?.y ?? 105}px`,
               }}
               onPointerDown={(e) =>
-                handlePointerDown(e, 'phoneNumber', fields.phoneNumber.x, fields.phoneNumber.y)
+                handlePointerDown(e, 'phoneNumber', fields.phoneNumber?.x ?? 45, fields.phoneNumber?.y ?? 105)
               }
               onMouseEnter={() => setHoveredFieldId('phoneNumber')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1 flex items-center justify-between">
-                  <span>ስልክ | Phone Number</span>
-                  {(showCoordinatesBadges || highlightField === 'phoneNumber' || hoveredFieldId === 'phoneNumber') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.phoneNumber.x} Y:{fields.phoneNumber.y}
-                    </span>
-                  )}
+                <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  ስልክ | Phone Number
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'phoneNumber' || hoveredFieldId === 'phoneNumber') && !isExporting && (
+                <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.phoneNumber?.x ?? 45} Y:{fields.phoneNumber?.y ?? 105}
                 </div>
               )}
               <div 
-                className="font-bold font-mono"
+                className="font-bold"
                 style={{
-                  fontSize: `${fields.phoneNumber.fontSize}px`,
-                  color: fields.phoneNumber.color || '#111827',
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.phoneNumber?.fontSize ?? 24}px`,
+                  color: fields.phoneNumber?.color || '#111827',
                 }}
               >
                 {cleanFieldText('phoneNumber', data.phoneNumber) || '0928574836'}
               </div>
             </div>
 
-            {/* Middle Left: Nationality */}
-            <div
-              className={`absolute transition-all rounded-lg p-1.5 ${
-                highlightField === 'nationality' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
-              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
-              style={{
-                left: `${fields.nationality.x}px`,
-                top: `${fields.nationality.y - (tConfig.showFieldLabels ? 25 : 0)}px`,
-              }}
-              onPointerDown={(e) =>
-                handlePointerDown(e, 'nationality', fields.nationality.x, fields.nationality.y)
-              }
-              onMouseEnter={() => setHoveredFieldId('nationality')}
-              onMouseLeave={() => setHoveredFieldId(null)}
-            >
-              {tConfig.showFieldLabels && (
-                <>
-                  <div className="text-[12px] font-bold text-yellow-900/85 leading-none flex items-center justify-between">
-                    <span>ዜግነት | Nationality</span>
-                    {(showCoordinatesBadges || highlightField === 'nationality' || hoveredFieldId === 'nationality') && !isExporting && (
-                      <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                        X:{fields.nationality.x} Y:{fields.nationality.y}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-yellow-800/70 mb-1">
-                    (በተገለጸው መሰረት | Self Declared)
-                  </div>
-                </>
-              )}
-              <div 
-                className="font-bold"
+            {/* Middle Left: Nationality (Removed/Hidden by default per standard Ethiopian Fayda ID) */}
+            {tConfig.showNationality && fields.nationality && (
+              <div
+                className={`absolute transition-all rounded-sm p-0 ${
+                  highlightField === 'nationality' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
+                } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
                 style={{
-                  fontSize: `${fields.nationality.fontSize}px`,
-                  color: fields.nationality.color || '#111827',
+                  left: `${fields.nationality.x}px`,
+                  top: `${fields.nationality.y}px`,
                 }}
+                onPointerDown={(e) =>
+                  handlePointerDown(e, 'nationality', fields.nationality.x, fields.nationality.y)
+                }
+                onMouseEnter={() => setHoveredFieldId('nationality')}
+                onMouseLeave={() => setHoveredFieldId(null)}
               >
-                {cleanFieldText('nationalityAmharic', data.nationalityAmharic) || 'ኢትዮጵያዊ'} | {cleanFieldText('nationalityEnglish', data.nationalityEnglish) || 'Ethiopian'}
+                {tConfig.showFieldLabels && (
+                  <div className="absolute -top-4 left-0 text-[11px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                    ዜግነት | Nationality
+                  </div>
+                )}
+                {(showCoordinatesBadges || highlightField === 'nationality' || hoveredFieldId === 'nationality') && !isExporting && (
+                  <div className="absolute -top-3.5 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                    X:{fields.nationality.x} Y:{fields.nationality.y}
+                  </div>
+                )}
+                <div 
+                  className="font-bold"
+                  style={{
+                    fontFamily: cardFontFamilyCss,
+                    fontSize: `${fields.nationality.fontSize}px`,
+                    color: fields.nationality.color || '#111827',
+                  }}
+                >
+                  {cleanFieldText('nationalityAmharic', data.nationalityAmharic) || 'ኢትዮጵያዊ'} | {cleanFieldText('nationalityEnglish', data.nationalityEnglish) || 'Ethiopian'}
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Address Block */}
+            {/* Step-by-Step Address Layer 1: Region Amharic / ክልል */}
             <div
-              className={`absolute w-[420px] transition-all rounded-lg p-1.5 ${
-                highlightField === 'regionAmharic' || highlightField === 'zoneSubcity' || highlightField === 'woredaKebele'
+              className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
+                highlightField === 'regionAmharic'
                   ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
                   : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
-                left: `${fields.regionAmharic.x}px`,
-                top: `${fields.regionAmharic.y - (tConfig.showFieldLabels ? 20 : 0)}px`,
+                left: `${fields.regionAmharic?.x ?? 45}px`,
+                top: `${fields.regionAmharic?.y ?? 275}px`,
               }}
               onPointerDown={(e) =>
-                handlePointerDown(e, 'regionAmharic', fields.regionAmharic.x, fields.regionAmharic.y)
+                handlePointerDown(e, 'regionAmharic', fields.regionAmharic?.x ?? 45, fields.regionAmharic?.y ?? 275)
               }
               onMouseEnter={() => setHoveredFieldId('regionAmharic')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               {tConfig.showFieldLabels && (
-                <div className="text-[12px] font-bold text-yellow-900/85 leading-none mb-1.5 flex items-center justify-between">
-                  <span>አድራሻ | Address</span>
-                  {(showCoordinatesBadges || highlightField === 'regionAmharic' || hoveredFieldId === 'regionAmharic') && !isExporting && (
-                    <span className="bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded ml-2">
-                      X:{fields.regionAmharic.x} Y:{fields.regionAmharic.y}
-                    </span>
-                  )}
+                <div className="absolute -top-3.5 left-0 text-[10px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  ክልል (Amharic)
                 </div>
               )}
-              <div className="space-y-1 text-gray-900">
-                <div 
-                  className="font-semibold"
-                  style={{
-                    fontSize: `${fields.regionAmharic.fontSize}px`,
-                    color: fields.regionAmharic.color || '#111827',
-                  }}
-                >
-                  {tConfig.showFieldLabels && <span className="text-gray-500 text-[14px]">ክልል: </span>}
-                  <span className="font-bold text-gray-950">
-                    {cleanFieldText('regionAmharic', data.regionAmharic)}
-                    {data.regionEnglish ? ` / ${cleanFieldText('regionEnglish', data.regionEnglish)}` : ''}
-                  </span>
-                </div>
-                <div 
-                  className="font-semibold"
-                  style={{
-                    fontSize: `${fields.zoneSubcity.fontSize}px`,
-                    color: fields.zoneSubcity.color || '#1f2937',
-                  }}
-                >
-                  {tConfig.showFieldLabels && <span className="text-gray-500 text-[14px]">ዞን / ክ/ከተማ: </span>}
-                  <span className="font-bold text-gray-950">
-                    {cleanFieldText('zoneAmharic', data.zoneAmharic)}
-                    {data.zoneEnglish ? ` / ${cleanFieldText('zoneEnglish', data.zoneEnglish)}` : ''}
-                  </span>
-                </div>
-                <div 
-                  className="font-semibold"
-                  style={{
-                    fontSize: `${fields.woredaKebele.fontSize}px`,
-                    color: fields.woredaKebele.color || '#1f2937',
-                  }}
-                >
-                  {tConfig.showFieldLabels && <span className="text-gray-500 text-[14px]">ወረዳ / ቀበሌ: </span>}
-                  <span className="font-bold text-gray-950">
-                    {cleanFieldText('woredaAmharic', data.woredaAmharic) || 'ወረዳ 01'}
-                    {data.kebele ? ` (ቀበሌ ${cleanFieldText('kebele', data.kebele)})` : ''}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom Left Box for FCN / FIN Code */}
-            <div
-              className={`absolute flex flex-col items-center justify-center transition-all ${
-                tConfig.showBarcodeBox 
-                  ? 'w-[290px] h-[65px] bg-white border border-gray-300 rounded-lg shadow-2xs' 
-                  : 'p-1'
-              } ${
-                highlightField === 'barcodeText' ? 'ring-4 ring-emerald-500 border-emerald-600 z-20 shadow-md' : ''
-              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
-              style={{
-                left: `${fields.barcodeText.x - (tConfig.showBarcodeBox ? 20 : 0)}px`,
-                top: `${fields.barcodeText.y - (tConfig.showBarcodeBox ? 30 : 0)}px`,
-              }}
-              onPointerDown={(e) =>
-                handlePointerDown(e, 'barcodeText', fields.barcodeText.x, fields.barcodeText.y)
-              }
-              onMouseEnter={() => setHoveredFieldId('barcodeText')}
-              onMouseLeave={() => setHoveredFieldId(null)}
-            >
-              {tConfig.showBarcodeBox && (
-                <div className="font-mono text-[11px] text-gray-500 font-semibold tracking-wider">
-                  {data.fcn || `FCN-${data.fan.replace(/\s+/g, '')}`}
+              {(showCoordinatesBadges || highlightField === 'regionAmharic' || hoveredFieldId === 'regionAmharic') && !isExporting && (
+                <div className="absolute -top-3 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.regionAmharic?.x ?? 45} Y:{fields.regionAmharic?.y ?? 275}
                 </div>
               )}
               <div 
-                className="font-mono font-bold tracking-widest mt-0.5"
+                className="font-bold text-gray-950 leading-tight"
                 style={{
-                  fontSize: `${fields.barcodeText.fontSize}px`,
-                  color: fields.barcodeText.color || '#1e293b',
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.regionAmharic?.fontSize ?? 20}px`,
+                  color: fields.regionAmharic?.color || '#111827',
                 }}
               >
-                ★ {data.fan.slice(0, 9)} ★
+                {cleanFieldText('regionAmharic', data.regionAmharic) || 'ሲዳማ'}
               </div>
-              {(showCoordinatesBadges || highlightField === 'barcodeText' || hoveredFieldId === 'barcodeText') && !isExporting && (
-                <div className="absolute -top-3 right-1 bg-slate-900 text-white text-[9px] font-mono px-1.5 py-0.2 rounded shadow-md">
-                  X:{fields.barcodeText.x} Y:{fields.barcodeText.y}
+            </div>
+
+            {/* Step-by-Step Address Layer 2: Region English */}
+            <div
+              className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
+                highlightField === 'regionEnglish'
+                  ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${fields.regionEnglish?.x ?? (fields.regionAmharic?.x ?? 45)}px`,
+                top: `${fields.regionEnglish?.y ?? ((fields.regionAmharic?.y ?? 275) + 27)}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e, 
+                  'regionEnglish', 
+                  fields.regionEnglish?.x ?? (fields.regionAmharic?.x ?? 45), 
+                  fields.regionEnglish?.y ?? ((fields.regionAmharic?.y ?? 275) + 27)
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('regionEnglish')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <div className="absolute -top-3.5 left-0 text-[10px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  Region (English)
                 </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'regionEnglish' || hoveredFieldId === 'regionEnglish') && !isExporting && (
+                <div className="absolute -top-3 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.regionEnglish?.x ?? (fields.regionAmharic?.x ?? 45)} Y:{fields.regionEnglish?.y ?? ((fields.regionAmharic?.y ?? 275) + 27)}
+                </div>
+              )}
+              <div 
+                className="font-bold text-gray-900 leading-tight"
+                style={{
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.regionEnglish?.fontSize ?? fields.regionAmharic?.fontSize ?? 20}px`,
+                  color: fields.regionEnglish?.color || fields.regionAmharic?.color || '#111827',
+                }}
+              >
+                {cleanFieldText('regionEnglish', data.regionEnglish) || 'Sidama'}
+              </div>
+            </div>
+
+            {/* Step-by-Step Address Layer 3: Zone / Subcity Amharic / ዞን / ክ/ከተማ */}
+            <div
+              className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
+                highlightField === 'zoneAmharic' || highlightField === 'zoneSubcity'
+                  ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${fields.zoneAmharic?.x ?? (fields.zoneSubcity?.x ?? 45)}px`,
+                top: `${fields.zoneAmharic?.y ?? (fields.zoneSubcity?.y ?? 345)}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e, 
+                  'zoneAmharic', 
+                  fields.zoneAmharic?.x ?? (fields.zoneSubcity?.x ?? 45), 
+                  fields.zoneAmharic?.y ?? (fields.zoneSubcity?.y ?? 345)
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('zoneAmharic')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <div className="absolute -top-3.5 left-0 text-[10px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  ዞን / ክ/ከተማ (Amharic)
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'zoneAmharic' || hoveredFieldId === 'zoneAmharic') && !isExporting && (
+                <div className="absolute -top-3 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.zoneAmharic?.x ?? (fields.zoneSubcity?.x ?? 45)} Y:{fields.zoneAmharic?.y ?? (fields.zoneSubcity?.y ?? 345)}
+                </div>
+              )}
+              <div 
+                className="font-bold text-gray-950 leading-tight"
+                style={{
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.zoneAmharic?.fontSize ?? fields.zoneSubcity?.fontSize ?? 20}px`,
+                  color: fields.zoneAmharic?.color || fields.zoneSubcity?.color || '#1f2937',
+                }}
+              >
+                {cleanFieldText('zoneAmharic', data.zoneAmharic) || 'አርበጎና'}
+              </div>
+            </div>
+
+            {/* Step-by-Step Address Layer 4: Zone / Subcity English */}
+            <div
+              className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
+                highlightField === 'zoneEnglish'
+                  ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${fields.zoneEnglish?.x ?? (fields.zoneAmharic?.x ?? fields.zoneSubcity?.x ?? 45)}px`,
+                top: `${fields.zoneEnglish?.y ?? ((fields.zoneAmharic?.y ?? fields.zoneSubcity?.y ?? 345) + 27)}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e, 
+                  'zoneEnglish', 
+                  fields.zoneEnglish?.x ?? (fields.zoneAmharic?.x ?? fields.zoneSubcity?.x ?? 45), 
+                  fields.zoneEnglish?.y ?? ((fields.zoneAmharic?.y ?? fields.zoneSubcity?.y ?? 345) + 27)
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('zoneEnglish')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <div className="absolute -top-3.5 left-0 text-[10px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  Zone / Subcity (English)
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'zoneEnglish' || hoveredFieldId === 'zoneEnglish') && !isExporting && (
+                <div className="absolute -top-3 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.zoneEnglish?.x ?? (fields.zoneAmharic?.x ?? 45)} Y:{fields.zoneEnglish?.y ?? ((fields.zoneAmharic?.y ?? 345) + 27)}
+                </div>
+              )}
+              <div 
+                className="font-bold text-gray-900 leading-tight"
+                style={{
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.zoneEnglish?.fontSize ?? fields.zoneAmharic?.fontSize ?? fields.zoneSubcity?.fontSize ?? 20}px`,
+                  color: fields.zoneEnglish?.color || fields.zoneSubcity?.color || '#1f2937',
+                }}
+              >
+                {cleanFieldText('zoneEnglish', data.zoneEnglish) || 'Arbegona'}
+              </div>
+            </div>
+
+            {/* Step-by-Step Address Layer 5: Woreda Amharic / ወረዳ */}
+            <div
+              className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
+                highlightField === 'woredaAmharic' || highlightField === 'woredaKebele'
+                  ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${fields.woredaAmharic?.x ?? (fields.woredaKebele?.x ?? 45)}px`,
+                top: `${fields.woredaAmharic?.y ?? (fields.woredaKebele?.y ?? 415)}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e, 
+                  'woredaAmharic', 
+                  fields.woredaAmharic?.x ?? (fields.woredaKebele?.x ?? 45), 
+                  fields.woredaAmharic?.y ?? (fields.woredaKebele?.y ?? 415)
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('woredaAmharic')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <div className="absolute -top-3.5 left-0 text-[10px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  ወረዳ (Amharic)
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'woredaAmharic' || hoveredFieldId === 'woredaAmharic') && !isExporting && (
+                <div className="absolute -top-3 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.woredaAmharic?.x ?? (fields.woredaKebele?.x ?? 45)} Y:{fields.woredaAmharic?.y ?? (fields.woredaKebele?.y ?? 415)}
+                </div>
+              )}
+              <div 
+                className="font-bold text-gray-950 leading-tight"
+                style={{
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.woredaAmharic?.fontSize ?? fields.woredaKebele?.fontSize ?? 20}px`,
+                  color: fields.woredaAmharic?.color || fields.woredaKebele?.color || '#1f2937',
+                }}
+              >
+                {cleanFieldText('woredaAmharic', data.woredaAmharic) || 'ወረዳ 01'}
+              </div>
+            </div>
+
+            {/* Step-by-Step Address Layer 6: Woreda English */}
+            <div
+              className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
+                highlightField === 'woredaEnglish'
+                  ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:bg-emerald-50/70 hover:ring-1 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${fields.woredaEnglish?.x ?? (fields.woredaAmharic?.x ?? fields.woredaKebele?.x ?? 45)}px`,
+                top: `${fields.woredaEnglish?.y ?? ((fields.woredaAmharic?.y ?? fields.woredaKebele?.y ?? 415) + 27)}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e, 
+                  'woredaEnglish', 
+                  fields.woredaEnglish?.x ?? (fields.woredaAmharic?.x ?? fields.woredaKebele?.x ?? 45), 
+                  fields.woredaEnglish?.y ?? ((fields.woredaAmharic?.y ?? fields.woredaKebele?.y ?? 415) + 27)
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('woredaEnglish')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+              {tConfig.showFieldLabels && (
+                <div className="absolute -top-3.5 left-0 text-[10px] font-bold text-yellow-900/85 leading-none pointer-events-none whitespace-nowrap" style={{ fontFamily: cardFontFamilyCss }}>
+                  Woreda (English)
+                </div>
+              )}
+              {(showCoordinatesBadges || highlightField === 'woredaEnglish' || hoveredFieldId === 'woredaEnglish') && !isExporting && (
+                <div className="absolute -top-3 right-0 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.2 rounded pointer-events-none z-30">
+                  X:{fields.woredaEnglish?.x ?? (fields.woredaAmharic?.x ?? 45)} Y:{fields.woredaEnglish?.y ?? ((fields.woredaAmharic?.y ?? 415) + 27)}
+                </div>
+              )}
+              <div 
+                className="font-bold text-gray-900 leading-tight"
+                style={{
+                  fontFamily: cardFontFamilyCss,
+                  fontSize: `${fields.woredaEnglish?.fontSize ?? fields.woredaAmharic?.fontSize ?? fields.woredaKebele?.fontSize ?? 20}px`,
+                  color: fields.woredaEnglish?.color || fields.woredaKebele?.color || '#1f2937',
+                }}
+              >
+                {cleanFieldText('woredaEnglish', data.woredaEnglish) || cleanFieldText('woredaAmharic', data.woredaAmharic) || 'Woreda 01'}
+              </div>
+            </div>
+
+            {/* Bottom Left: Back FAN Cut Layer (Authentic Crop from Slip OR FIN / FAN Cut Box) */}
+            <div
+              className={`absolute flex flex-col items-center justify-center transition-all ${
+                highlightField === 'backFanCut' || highlightField === 'barcodeText'
+                  ? 'ring-4 ring-emerald-500 border-emerald-600 z-30 shadow-lg'
+                  : ''
+              } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
+              style={{
+                left: `${media.backFanCut?.x ?? 45}px`,
+                top: `${media.backFanCut?.y ?? 505}px`,
+                width: `${media.backFanCut?.width ?? 440}px`,
+                height: `${media.backFanCut?.height ?? 95}px`,
+              }}
+              onPointerDown={(e) =>
+                handlePointerDown(
+                  e,
+                  'backFanCut',
+                  media.backFanCut?.x ?? 45,
+                  media.backFanCut?.y ?? 505
+                )
+              }
+              onMouseEnter={() => setHoveredFieldId('backFanCut')}
+              onMouseLeave={() => setHoveredFieldId(null)}
+            >
+          {/* Inner clipped surface */}
+<div
+  className="w-full h-full overflow-hidden flex flex-col items-center justify-center bg-white"
+  style={{
+    borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
+    opacity: media.backFanCut?.opacity ?? 0.80,
+    backgroundColor: '#ffffff',
+  }}
+>
+  <div
+    className="w-full h-full flex flex-col items-center justify-center p-1 bg-white"
+    style={{
+      borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
+      transform: media.backFanCut?.scaleX ? `scaleX(${media.backFanCut.scaleX})` : undefined,
+    }}
+  >
+    <div
+      className="tracking-widest select-all text-center flex items-center justify-center w-full h-full"
+      style={{
+        fontFamily:
+          fields.barcodeText?.fontFamily === 'Monospace' || fields.barcodeText?.fontFamily === 'OCR-B'
+            ? '"OCR-B", "Consolas", monospace'
+            : 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        fontWeight:
+          fields.barcodeText?.fontWeight === 'bold' ? 600
+          : fields.barcodeText?.fontWeight === 'medium' ? 500
+          : 400,
+        fontSize: `${fields.barcodeText?.fontSize || 19}px`,
+        color: fields.barcodeText?.color || '#111827',
+        letterSpacing: media.backFanCut?.letterSpacing
+          ? `${media.backFanCut.letterSpacing}em`
+          : '0.12em',
+      }}
+    >
+      {formatBackFan(data.backFan || data.fan)}
+    </div>
+  </div>
+</div>
+
+              {/* Coordinates & Dimensions Badge */}
+              {(showCoordinatesBadges || highlightField === 'backFanCut' || hoveredFieldId === 'backFanCut') && !isExporting && (
+                <div className="absolute top-1 left-1 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
+                  <span className="text-emerald-400">Back FAN X:{media.backFanCut?.x ?? 45}</span>
+                  <span className="text-cyan-400">Y:{media.backFanCut?.y ?? 505}</span>
+                  <span className="text-amber-300">W:{media.backFanCut?.width ?? 440} H:{media.backFanCut?.height ?? 95}</span>
+                </div>
+              )}
+
+              {/* Interactive Stretch / Resize Controls on Card (Coordination Editing Mode) */}
+              {interactive && !isExporting && (highlightField === 'backFanCut' || hoveredFieldId === 'backFanCut') && (
+                <>
+                  {/* Right Edge: Horizontal Stretch Handle */}
+                  <div
+                    className="absolute -right-2.5 top-1/2 -translate-y-1/2 w-5 h-10 cursor-ew-resize flex items-center justify-center z-40 group"
+                    title="Drag to Stretch Back FAN Width (የተዘረጋ ስፋት)"
+                    onPointerDown={(e) =>
+                      handleResizePointerDown(
+                        e,
+                        'backFanCut',
+                        media.backFanCut?.width ?? 440,
+                        media.backFanCut?.height ?? 95,
+                        'horizontal',
+                        media.backFanCut?.x ?? 45,
+                        media.backFanCut?.y ?? 505
+                      )
+                    }
+                  >
+                    <div className="w-2.5 h-8 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-110 rounded-full border-2 border-white shadow-md flex items-center justify-center transition-transform">
+                      <div className="w-0.5 h-3 bg-white rounded-full"></div>
+                    </div>
+                    <span className="absolute -top-7 right-0 bg-slate-900 text-emerald-300 text-[9px] font-mono px-1.5 py-0.5 rounded shadow whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                      ↔ Stretch Width
+                    </span>
+                  </div>
+
+                  {/* Bottom Edge: Vertical Resize Handle */}
+                  <div
+                    className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 h-5 w-10 cursor-ns-resize flex items-center justify-center z-40 group"
+                    title="Drag to Resize Back FAN Height"
+                    onPointerDown={(e) =>
+                      handleResizePointerDown(
+                        e,
+                        'backFanCut',
+                        media.backFanCut?.width ?? 440,
+                        media.backFanCut?.height ?? 95,
+                        'vertical',
+                        media.backFanCut?.x ?? 45,
+                        media.backFanCut?.y ?? 505
+                      )
+                    }
+                  >
+                    <div className="h-2.5 w-8 bg-emerald-500 group-hover:bg-emerald-400 group-hover:scale-110 rounded-full border-2 border-white shadow-md flex items-center justify-center transition-transform">
+                      <div className="h-0.5 w-3 bg-white rounded-full"></div>
+                    </div>
+                    <span className="absolute -bottom-7 bg-slate-900 text-emerald-300 text-[9px] font-mono px-1.5 py-0.5 rounded shadow whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                      ↕ Stretch Height
+                    </span>
+                  </div>
+
+                  {/* Bottom-Right Corner: Diagonal Stretch Handle */}
+                  <div
+                    className="absolute -right-2 -bottom-2 w-5 h-5 cursor-nwse-resize bg-emerald-600 hover:bg-emerald-500 rounded-br-lg rounded-tl-sm border-2 border-white shadow-md flex items-center justify-center text-white text-[10px] font-bold z-50 transition-transform hover:scale-110"
+                    title="Drag to Stretch Width & Height"
+                    onPointerDown={(e) =>
+                      handleResizePointerDown(
+                        e,
+                        'backFanCut',
+                        media.backFanCut?.width ?? 440,
+                        media.backFanCut?.height ?? 95,
+                        'both',
+                        media.backFanCut?.x ?? 45,
+                        media.backFanCut?.y ?? 505
+                      )
+                    }
+                  >
+                    ⤡
+                  </div>
+
+                  {/* Floating Mini Stretch Quick-Toolbar */}
+                  <div 
+                    className="absolute -top-7.5 left-0 flex items-center gap-1.5 bg-slate-900/95 text-white px-2 py-0.5 rounded-md shadow-lg border border-slate-700/80 z-50 text-[10px] font-mono pointer-events-auto"
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <span className="text-emerald-400 font-bold">
+                      Stretch: {media.backFanCut?.width ?? 440}px
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onResizeField?.('backFanCut', Math.min(canvasWidth - (media.backFanCut?.x ?? 45), (media.backFanCut?.width ?? 440) + 20), media.backFanCut?.height ?? 95)}
+                      className="px-1.5 py-0.2 bg-emerald-700 hover:bg-emerald-600 text-white rounded font-bold transition-colors cursor-pointer"
+                      title="Stretch Width +20px"
+                    >
+                      +20
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onResizeField?.('backFanCut', Math.min(canvasWidth - (media.backFanCut?.x ?? 45), (media.backFanCut?.width ?? 440) + 50), media.backFanCut?.height ?? 95)}
+                      className="px-1.5 py-0.2 bg-pink-700 hover:bg-pink-600 text-white rounded font-bold transition-colors cursor-pointer"
+                      title="Stretch Width +50px"
+                    >
+                      +50
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onResizeField?.('backFanCut', Math.max(100, (media.backFanCut?.width ?? 440) - 20), media.backFanCut?.height ?? 95)}
+                      className="px-1.5 py-0.2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded font-bold transition-colors cursor-pointer"
+                      title="Shrink Width -20px"
+                    >
+                      -20
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onResizeField?.('backFanCut', 520, media.backFanCut?.height ?? 95)}
+                      className="px-1.5 py-0.2 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded font-bold transition-colors cursor-pointer"
+                      title="Set Wide (520px)"
+                    >
+                      520px
+                    </button>
+                  </div>
+                </>
               )}
             </div>
 
-            {/* Right Side: Large High-Density Digital QR Code */}
+            {/* Right Side: Large High-Density Digital QR Code (Frameless - no borders) */}
             <div
-              className={`absolute bg-white p-3 rounded-2xl border border-gray-300 shadow-md flex flex-col items-center justify-center transition-all ${
-                highlightField === 'qrCodeBack' ? 'ring-4 ring-emerald-500 border-emerald-600 z-20 shadow-lg' : ''
+              className={`absolute flex flex-col items-center justify-center transition-all ${
+                highlightField === 'qrCodeBack' ? 'ring-4 ring-emerald-500 rounded-lg z-20 shadow-lg' : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-emerald-400' : ''}`}
               style={{
                 left: `${media.qrCodeBack.x}px`,
                 top: `${media.qrCodeBack.y}px`,
                 width: `${media.qrCodeBack.width}px`,
                 height: `${media.qrCodeBack.height}px`,
-                borderRadius: `${media.qrCodeBack.borderRadius || 12}px`,
+                borderRadius: `${media.qrCodeBack.borderRadius || 0}px`,
+                border: 'none',
+                background: 'transparent',
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'qrCodeBack', media.qrCodeBack.x, media.qrCodeBack.y)
@@ -981,15 +1603,18 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseEnter={() => setHoveredFieldId('qrCodeBack')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
-              {data.qrCodeImageUrl || qrDataUrl ? (
+              {cleanQrUrl || data.qrCodeImageUrl || qrDataUrl ? (
                 <img
-                  src={data.qrCodeImageUrl || qrDataUrl}
+                  src={cleanQrUrl || data.qrCodeImageUrl || qrDataUrl}
                   alt="Exact Cropped QR Code from PDF Slip"
                   className="w-full h-full object-contain pointer-events-none select-none"
-                  style={{ imageRendering: 'crisp-edges' }}
+                  style={{ 
+                    imageRendering: 'crisp-edges',
+                    mixBlendMode: 'multiply', // removes any background artifact so background shows through
+                  }}
                 />
               ) : (
-                <div className="w-full h-full bg-gray-50 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center border border-dashed border-gray-200 rounded-lg">
+                <div className="w-full h-full bg-white/40 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center border border-dashed border-gray-300 rounded-lg">
                   <span className="text-[10px] font-medium text-gray-500">Biometric QR Matrix</span>
                 </div>
               )}
@@ -1002,28 +1627,29 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Bottom Footer Notice (Toggleable) */}
-            {tConfig.showFooterNotice && (
-              <div className="absolute left-10 right-10 bottom-3 flex items-center justify-between border-t border-emerald-900/10 pt-2 text-[10px] text-gray-700 leading-tight">
+            {/* Bottom Footer Notice (Toggleable - hidden if custom template is loaded) */}
+            {tConfig.showFooterNotice && !hasCustomBg && (
+              <div className="absolute left-10 right-10 bottom-3 flex items-center justify-between border-t border-emerald-900/10 pt-2 text-[10px] text-gray-700 leading-tight" style={{ fontFamily: cardFontFamilyCss }}>
                 <div className="max-w-[680px]">
-                  <p className="font-semibold text-gray-900">
+                  <p className="font-semibold text-gray-900" style={{ fontFamily: cardFontFamilyCss }}>
                     ይህ መታወቂያ የጠፋ ካገኙ በአቅራቢያዎ ላለ ፖሊስ ጣቢያ ወይም ለተቋሙ ያስረክቡ። ለተጨማሪ 9779 ላይ ይደውሉ ወይም id.et/cardprint ይጎብኙ።
                   </p>
-                  <p className="text-gray-600">
+                  <p className="text-gray-600" style={{ fontFamily: cardFontFamilyCss }}>
                     If lost and found, please return to nearby police station or to the institution. Call 9779 or visit id.et/cardprint for more.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Serial Number */}
+            {/* Serial Number (With 'SN :' prefix and crisp solid white background) */}
             <div
-              className={`absolute right-10 bottom-3 bg-white/95 px-3 py-1 rounded-md border border-gray-300 text-right transition-all ${
-                highlightField === 'serialNumber' ? 'ring-2 ring-emerald-500 z-20' : ''
+              id="field-serialNumber"
+              className={`absolute text-right transition-all ${
+                highlightField === 'serialNumber' ? 'ring-2 ring-emerald-500 rounded z-20' : ''
               } ${interactive ? 'cursor-grab active:cursor-grabbing hover:ring-1 hover:ring-emerald-400' : ''}`}
               style={{
-                left: fields.serialNumber.x !== 820 ? `${fields.serialNumber.x}px` : undefined,
-                top: fields.serialNumber.y !== 608 ? `${fields.serialNumber.y}px` : undefined,
+                left: `${fields.serialNumber.x}px`,
+                top: `${fields.serialNumber.y}px`,
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'serialNumber', fields.serialNumber.x, fields.serialNumber.y)
@@ -1032,13 +1658,15 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseLeave={() => setHoveredFieldId(null)}
             >
               <span 
-                className="font-bold font-mono"
+                className="font-bold tracking-wider select-none bg-white px-2 py-0.5 rounded shadow-xs inline-block whitespace-nowrap"
                 style={{
+                  fontFamily: cardFontFamilyCss,
                   fontSize: `${fields.serialNumber.fontSize}px`,
                   color: fields.serialNumber.color || '#111827',
+                  backgroundColor: '#ffffff',
                 }}
               >
-                SN : {data.serialNumber || '984729184'}
+                SN : {format7DigitSerial(data.serialNumber)}
               </span>
               {(showCoordinatesBadges || highlightField === 'serialNumber' || hoveredFieldId === 'serialNumber') && !isExporting && (
                 <span className="block text-[8px] font-mono text-gray-500">

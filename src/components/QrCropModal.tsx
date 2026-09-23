@@ -24,7 +24,7 @@ import {
   Maximize2
 } from 'lucide-react';
 import jsQR from 'jsqr';
-import { cropExactQrCode, getDefaultFaydaQrBox, detectAndCenterQrRegion } from '../utils/qrPrecisionCropper';
+import { cropExactQrCode, getDefaultFaydaQrBox, detectAndCenterQrRegion, applyQrFilterToCanvas } from '../utils/qrPrecisionCropper';
 
 interface QrCropModalProps {
   isOpen: boolean;
@@ -50,7 +50,7 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
   const [rotation, setRotation] = useState<number>(0);
   const [zoom, setZoom] = useState<number>(1);
   const [filterMode, setFilterMode] = useState<'original' | 'enhanced' | 'crispBw'>('enhanced');
-  const [quietZonePercent, setQuietZonePercent] = useState<number>(4); // 0%, 3%, 4%, 6%
+  const [quietZonePercent, setQuietZonePercent] = useState<number>(0); // 0% borderless default
   const [showGuides, setShowGuides] = useState<boolean>(true);
   const [detectStatusMessage, setDetectStatusMessage] = useState<string>('');
   const [activeRightTab, setActiveRightTab] = useState<'output' | 'loupe'>('output');
@@ -91,9 +91,18 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       const initialSource = sourceImageUrl || currentQrUrl || '';
-      setActiveSourceUrl(initialSource);
+      if (initialSource) {
+        setActiveSourceUrl(initialSource);
+      } else if (currentQrData) {
+        import('qrcode').then((QRCodeModule) => {
+          const QRCode = QRCodeModule.default || QRCodeModule;
+          QRCode.toDataURL(currentQrData, { errorCorrectionLevel: 'M', margin: 2, width: 600 })
+            .then((url: string) => setActiveSourceUrl(url))
+            .catch(() => {});
+        });
+      }
     }
-  }, [isOpen, sourceImageUrl, currentQrUrl]);
+  }, [isOpen, sourceImageUrl, currentQrUrl, currentQrData]);
 
   // Scroll container to place the QR crop box directly in the center of the viewport
   const centerViewportOnBox = useCallback(
@@ -140,6 +149,24 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
       img.onload = () => {
         setImgNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
         setImageLoaded(true);
+
+        // 0. If the source image is already a standalone QR code (aspect ratio close to 1:1)
+        const isSquareQr =
+          Math.abs(img.naturalWidth - img.naturalHeight) / Math.max(img.naturalWidth, img.naturalHeight) < 0.25;
+        if (isSquareQr) {
+          const sq = Math.round(Math.min(img.naturalWidth, img.naturalHeight) * 0.94);
+          const centeredBox = {
+            x: Math.round((img.naturalWidth - sq) / 2),
+            y: Math.round((img.naturalHeight - sq) / 2),
+            width: sq,
+            height: sq,
+          };
+          setCropBox(centeredBox);
+          setDetectStatusMessage('Centered on QR code matrix');
+          setTimeout(() => setDetectStatusMessage(''), 3000);
+          centerViewportOnBox(centeredBox, img.naturalWidth, img.naturalHeight);
+          return;
+        }
 
         // 1. If pre-detected initialCropBox is provided from uploaded slip
         if (initialCropBox && initialCropBox.width > 20) {
@@ -238,9 +265,8 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (!ctx) return;
 
-        // Pure white background for quiet zone
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, previewSize, previewSize);
+        // Transparent background for quiet zone (frameless - no white border)
+        ctx.clearRect(0, 0, previewSize, previewSize);
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
 
@@ -269,33 +295,8 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
           ctx.drawImage(imgElement, box.x, box.y, box.width, box.height, qzPx, qzPx, drawSize, drawSize);
         }
 
-        // Apply print optimization filters
-        if (mode === 'enhanced' || mode === 'crispBw') {
-          const imgData = ctx.getImageData(0, 0, previewSize, previewSize);
-          const d = imgData.data;
-
-          if (mode === 'crispBw') {
-            // Adaptive thresholding / crisp binarization for laser print
-            for (let i = 0; i < d.length; i += 4) {
-              const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-              const val = lum < 135 ? 0 : 255;
-              d[i] = val;
-              d[i + 1] = val;
-              d[i + 2] = val;
-            }
-          } else {
-            // High-contrast enhancement
-            for (let i = 0; i < d.length; i += 4) {
-              const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-              // Contrast stretch
-              const contrastVal = lum < 120 ? Math.max(0, lum * 0.6) : Math.min(255, 120 + (lum - 120) * 1.4);
-              d[i] = contrastVal;
-              d[i + 1] = contrastVal;
-              d[i + 2] = contrastVal;
-            }
-          }
-          ctx.putImageData(imgData, 0, 0);
-        }
+        // Apply transparent background and contrast optimization: remove white borders safely
+        applyQrFilterToCanvas(ctx, previewSize, previewSize, mode);
 
         const previewDataUrl = canvas.toDataURL('image/png');
         setLivePreviewUrl(previewDataUrl);
@@ -519,9 +520,8 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
-    // Pure white quiet zone
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, targetOutputSize, targetOutputSize);
+    // Transparent quiet zone (frameless - no white border)
+    ctx.clearRect(0, 0, targetOutputSize, targetOutputSize);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
 
@@ -549,30 +549,8 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
       ctx.drawImage(img, cropBox.x, cropBox.y, cropBox.width, cropBox.height, qzPx, qzPx, drawSize, drawSize);
     }
 
-    // Apply print optimization filters
-    if (filterMode === 'enhanced' || filterMode === 'crispBw') {
-      const imgData = ctx.getImageData(0, 0, targetOutputSize, targetOutputSize);
-      const d = imgData.data;
-
-      if (filterMode === 'crispBw') {
-        for (let i = 0; i < d.length; i += 4) {
-          const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-          const val = lum < 135 ? 0 : 255;
-          d[i] = val;
-          d[i + 1] = val;
-          d[i + 2] = val;
-        }
-      } else {
-        for (let i = 0; i < d.length; i += 4) {
-          const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-          const contrastVal = lum < 120 ? Math.max(0, lum * 0.6) : Math.min(255, 120 + (lum - 120) * 1.4);
-          d[i] = contrastVal;
-          d[i + 1] = contrastVal;
-          d[i + 2] = contrastVal;
-        }
-      }
-      ctx.putImageData(imgData, 0, 0);
-    }
+    // Apply transparent background and contrast optimization: remove all white borders & paper safely
+    applyQrFilterToCanvas(ctx, targetOutputSize, targetOutputSize, filterMode);
 
     const finalQrUrl = canvas.toDataURL('image/png');
     onApplyCrop(finalQrUrl, liveDecodedPayload || undefined);
@@ -770,7 +748,7 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
           >
             {activeSourceUrl ? (
               <div
-                className="relative inline-block shadow-2xl transition-transform duration-100 ease-out"
+                className="relative inline-block shadow-2xl transition-transform duration-100 ease-out bg-white rounded-md overflow-hidden"
                 style={{
                   transform: `scale(${zoom})`,
                   transformOrigin: 'center center',
@@ -781,31 +759,28 @@ export const QrCropModal: React.FC<QrCropModalProps> = ({
                   ref={imageRef}
                   src={activeSourceUrl}
                   alt="Document Slip Source"
-                  className="max-h-[68vh] w-auto max-w-full object-contain pointer-events-none rounded-md"
+                  className="max-h-[68vh] w-auto max-w-full object-contain pointer-events-none rounded-md block"
                   style={{
                     transform: `rotate(${rotation}deg)`,
                     transition: 'transform 0.2s ease',
                   }}
-                  crossOrigin="anonymous"
+                  crossOrigin={activeSourceUrl.startsWith('data:') ? undefined : 'anonymous'}
                 />
 
-                {/* Dark Vignette Overlay outside Crop Box */}
+                {/* Shading Overlay outside Crop Box */}
                 {imageLoaded && (
                   <>
-                    <div
-                      className="absolute inset-0 bg-slate-950/60 pointer-events-none"
-                      style={{
-                        clipPath: `polygon(
-                          0% 0%, 0% 100%, 100% 100%, 100% 0%,
-                          ${boxPercent.left} 0%,
-                          ${boxPercent.left} ${boxPercent.top},
-                          calc(${boxPercent.left} + ${boxPercent.width}) ${boxPercent.top},
-                          calc(${boxPercent.left} + ${boxPercent.width}) calc(${boxPercent.top} + ${boxPercent.height}),
-                          ${boxPercent.left} calc(${boxPercent.top} + ${boxPercent.height}),
-                          ${boxPercent.left} 0%
-                        )`,
-                      }}
-                    />
+                    <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                      <div
+                        className="absolute border border-cyan-400/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.65)]"
+                        style={{
+                          left: boxPercent.left,
+                          top: boxPercent.top,
+                          width: boxPercent.width,
+                          height: boxPercent.height,
+                        }}
+                      />
+                    </div>
 
                     {/* Draggable & Resizable 1:1 Crop Frame */}
                     <div

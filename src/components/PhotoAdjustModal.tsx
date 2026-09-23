@@ -16,7 +16,14 @@ import {
   Droplet,
   Zap,
   CheckCircle2,
-  Palette
+  Palette,
+  UserCheck,
+  ShieldCheck,
+  Eraser,
+  Paintbrush,
+  Undo2,
+  MousePointer,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   ImageAdjustments,
@@ -32,8 +39,11 @@ interface PhotoAdjustModalProps {
   isOpen: boolean;
   onClose: () => void;
   originalPhotoUrl: string;
-  onApplyPhoto: (newPhotoUrl: string, target: 'primary' | 'secondary' | 'both') => void;
+  onApplyPhoto: (newPhotoUrl: string, target?: 'primary' | 'secondary' | 'both') => void;
   applicantName?: string;
+  initialTab?: 'adjust' | 'background' | 'presets';
+  photoColorMode?: 'color' | 'grayscale';
+  onToggleColorMode?: () => void;
 }
 
 export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
@@ -42,6 +52,9 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
   originalPhotoUrl,
   onApplyPhoto,
   applicantName = 'Applicant',
+  initialTab = 'background',
+  photoColorMode = 'color',
+  onToggleColorMode,
 }) => {
   // Active photo source (can be modified by background removal or initial)
   const [basePhotoSrc, setBasePhotoSrc] = useState<string>(originalPhotoUrl);
@@ -56,11 +69,31 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
   const [bgRemovedApplied, setBgRemovedApplied] = useState<boolean>(false);
   const [customBgColor, setCustomBgColor] = useState<string>('transparent');
 
+  // Manual touch-up brush state
+  const [brushMode, setBrushMode] = useState<'none' | 'erase' | 'restore'>('none');
+  const [brushSize, setBrushSize] = useState<number>(18);
+  const [isDrawing, setIsDrawing] = useState<boolean>(false);
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const originalImgRef = useRef<HTMLImageElement | null>(null);
+
   // Preview / Comparison state
   const [showOriginal, setShowOriginal] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'adjust' | 'background' | 'presets'>('adjust');
+  const [activeTab, setActiveTab] = useState<'adjust' | 'background' | 'presets'>('background');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [applySuccess, setApplySuccess] = useState<boolean>(false);
+
+  // Load and cache original image for restore brush
+  useEffect(() => {
+    if (originalPhotoUrl) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        originalImgRef.current = img;
+      };
+      img.src = originalPhotoUrl;
+    }
+  }, [originalPhotoUrl]);
 
   // Synchronize when modal opens with new photo
   useEffect(() => {
@@ -71,8 +104,90 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
       setBgOptions(DEFAULT_BG_OPTIONS);
       setBgRemovedApplied(false);
       setApplySuccess(false);
+      setBrushMode('none');
+      setUndoStack([]);
+      setActiveTab(initialTab || 'background');
     }
-  }, [isOpen, originalPhotoUrl]);
+  }, [isOpen, originalPhotoUrl, initialTab]);
+
+  // Sync offscreen touchup canvas with basePhotoSrc
+  useEffect(() => {
+    if (!basePhotoSrc || !previewCanvasRef.current) return;
+    const canvas = previewCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+    };
+    img.src = basePhotoSrc;
+  }, [basePhotoSrc]);
+
+  // Apply touch-up brush at coordinates
+  const applyBrushAt = (clientX: number, clientY: number) => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const cx = (clientX - rect.left) * scaleX;
+    const cy = (clientY - rect.top) * scaleY;
+    const r = brushSize * ((scaleX + scaleY) / 2);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+
+    if (brushMode === 'erase') {
+      ctx.clearRect(cx - r - 2, cy - r - 2, (r + 2) * 2, (r + 2) * 2);
+    } else if (brushMode === 'restore' && originalImgRef.current) {
+      ctx.drawImage(originalImgRef.current, 0, 0, canvas.width, canvas.height);
+    }
+    ctx.restore();
+  };
+
+  const handleStartDraw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (brushMode === 'none') return;
+    setIsDrawing(true);
+    setUndoStack((prev) => [...prev.slice(-10), basePhotoSrc]);
+
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    applyBrushAt(clientX, clientY);
+  };
+
+  const handleMoveDraw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || brushMode === 'none') return;
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    applyBrushAt(clientX, clientY);
+  };
+
+  const handleEndDraw = () => {
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    if (previewCanvasRef.current) {
+      const updatedUrl = previewCanvasRef.current.toDataURL('image/png');
+      setBasePhotoSrc(updatedUrl);
+      setBgRemovedApplied(true);
+    }
+  };
+
+  const handleUndoBrush = () => {
+    if (undoStack.length === 0) return;
+    const last = undoStack[undoStack.length - 1];
+    setUndoStack((prev) => prev.slice(0, -1));
+    setBasePhotoSrc(last);
+  };
 
   // Re-run adjustments whenever sliders or basePhotoSrc changes
   useEffect(() => {
@@ -123,8 +238,10 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
     setIsRemovingBg(true);
     try {
       const options: BgRemovalOptions = {
-        ...bgOptions,
+        tolerance: bgOptions.tolerance ?? 30,
+        feather: bgOptions.feather ?? 2,
         fillColor: targetFill,
+        edgeSmoothing: true,
       };
       const cutout = await removePhotoBackground(originalPhotoUrl, options);
       setBasePhotoSrc(cutout);
@@ -223,10 +340,12 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                 </button>
               </div>
 
+
+
               {/* Central Photo Display with Transparency Checkerboard */}
-              <div className="relative my-auto py-3 flex items-center justify-center">
+              <div className="relative my-auto py-2 flex flex-col items-center justify-center w-full">
                 <div
-                  className="w-48 h-60 sm:w-56 sm:h-70 rounded-2xl overflow-hidden shadow-2xl border-2 border-slate-700 relative flex items-center justify-center"
+                  className="w-48 h-60 sm:w-56 sm:h-70 rounded-2xl overflow-hidden shadow-2xl border-2 border-slate-700 relative flex items-center justify-center select-none"
                   style={{
                     backgroundImage:
                       customBgColor === 'transparent'
@@ -237,25 +356,143 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                     backgroundColor: customBgColor === 'transparent' ? '#0f172a' : customBgColor,
                   }}
                 >
-                  <img
-                    src={showOriginal ? originalPhotoUrl : processedPhotoUrl}
-                    alt="Applicant Portrait"
-                    className="w-full h-full object-cover transition-opacity duration-150"
-                  />
+                  {/* Interactive Canvas for Manual Touch-Up */}
+                  {brushMode !== 'none' && !showOriginal ? (
+                    <canvas
+                      ref={previewCanvasRef}
+                      onMouseDown={handleStartDraw}
+                      onMouseMove={handleMoveDraw}
+                      onMouseUp={handleEndDraw}
+                      onMouseLeave={handleEndDraw}
+                      onTouchStart={handleStartDraw}
+                      onTouchMove={handleMoveDraw}
+                      onTouchEnd={handleEndDraw}
+                      className={`w-full h-full object-cover touch-none ${
+                        brushMode === 'erase' ? 'cursor-crosshair' : 'cursor-cell'
+                      }`}
+                    />
+                  ) : (
+                    <img
+                      src={showOriginal ? originalPhotoUrl : processedPhotoUrl}
+                      alt="Applicant Portrait"
+                      className="w-full h-full object-cover transition-opacity duration-150"
+                    />
+                  )}
 
                   {isProcessing && (
-                    <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-2xs flex items-center justify-center">
+                    <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-2xs flex items-center justify-center pointer-events-none">
                       <span className="w-6 h-6 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span>
                     </div>
                   )}
 
                   {bgRemovedApplied && !showOriginal && (
-                    <div className="absolute top-2 left-2 bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
+                    <div className="absolute top-2 left-2 bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 pointer-events-none">
                       <Scissors className="w-3 h-3" />
                       Cutout Active
                     </div>
                   )}
+
+                  {brushMode !== 'none' && !showOriginal && (
+                    <div
+                      className={`absolute bottom-2 inset-x-2 text-center text-[10px] font-bold px-2 py-1 rounded-md shadow-md backdrop-blur-xs pointer-events-none flex items-center justify-center gap-1 ${
+                        brushMode === 'erase'
+                          ? 'bg-rose-950/90 text-rose-300 border border-rose-500/40'
+                          : 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/40'
+                      }`}
+                    >
+                      {brushMode === 'erase' ? (
+                        <>
+                          <Eraser className="w-3 h-3" />
+                          Erasing: Drag on canvas
+                        </>
+                      ) : (
+                        <>
+                          <Paintbrush className="w-3 h-3" />
+                          Restoring: Drag on canvas
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
+
+                {/* Touch-up Toolbar below preview when background tab active */}
+                {activeTab === 'background' && (
+                  <div className="w-full mt-3 px-1 py-1.5 bg-slate-900/90 border border-slate-800 rounded-xl flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setBrushMode('none')}
+                        className={`p-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                          brushMode === 'none'
+                            ? 'bg-slate-700 text-white'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                        title="View / Navigate"
+                      >
+                        <MousePointer className="w-3 h-3" />
+                        <span className="hidden sm:inline">Inspect</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setBrushMode('erase')}
+                        className={`p-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                          brushMode === 'erase'
+                            ? 'bg-rose-600 text-white shadow-xs'
+                            : 'text-rose-400 hover:bg-slate-800'
+                        }`}
+                        title="Erase background remnants"
+                      >
+                        <Eraser className="w-3 h-3" />
+                        <span>Eraser</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setBrushMode('restore')}
+                        className={`p-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                          brushMode === 'restore'
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'text-emerald-400 hover:bg-slate-800'
+                        }`}
+                        title="Restore clipped hair or clothing"
+                      >
+                        <Paintbrush className="w-3 h-3" />
+                        <span>Restore</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {brushMode !== 'none' && (
+                        <div className="flex items-center gap-1 text-[10px] text-slate-300">
+                          <span className="text-slate-400">Size:</span>
+                          <input
+                            type="range"
+                            min="6"
+                            max="36"
+                            value={brushSize}
+                            onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                            className="w-12 h-1 bg-slate-700 accent-emerald-500 rounded-sm cursor-pointer"
+                          />
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleUndoBrush}
+                        disabled={undoStack.length === 0}
+                        className={`p-1.5 rounded-lg text-[10px] transition-all flex items-center gap-0.5 ${
+                          undoStack.length > 0
+                            ? 'text-slate-200 hover:bg-slate-800 cursor-pointer'
+                            : 'text-slate-600 cursor-not-allowed opacity-50'
+                        }`}
+                        title="Undo brush stroke"
+                      >
+                        <Undo2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Action bar below preview */}
@@ -324,6 +561,8 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                   <Wand2 className="w-3.5 h-3.5 text-cyan-600" />
                   <span>Presets</span>
                 </button>
+
+
               </div>
 
               {/* TAB 1: LIGHT & DARK SLIDERS */}
@@ -358,7 +597,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                       type="range"
                       min="-100"
                       max="100"
-                      value={adjustments.brightness}
+                      value={adjustments.brightness ?? 0}
                       onChange={(e) => handleSliderChange('brightness', parseInt(e.target.value))}
                       className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-500"
                     />
@@ -384,7 +623,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                       type="range"
                       min="-100"
                       max="100"
-                      value={adjustments.exposure}
+                      value={adjustments.exposure ?? 0}
                       onChange={(e) => handleSliderChange('exposure', parseInt(e.target.value))}
                       className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                     />
@@ -410,7 +649,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                       type="range"
                       min="-100"
                       max="100"
-                      value={adjustments.contrast}
+                      value={adjustments.contrast ?? 0}
                       onChange={(e) => handleSliderChange('contrast', parseInt(e.target.value))}
                       className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-800"
                     />
@@ -438,7 +677,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                         type="range"
                         min="-100"
                         max="100"
-                        value={adjustments.saturation}
+                        value={adjustments.saturation ?? 0}
                         onChange={(e) => handleSliderChange('saturation', parseInt(e.target.value))}
                         className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-pink-500"
                       />
@@ -459,7 +698,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                         type="range"
                         min="-100"
                         max="100"
-                        value={adjustments.temperature}
+                        value={adjustments.temperature ?? 0}
                         onChange={(e) => handleSliderChange('temperature', parseInt(e.target.value))}
                         className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-orange-500"
                       />
@@ -481,7 +720,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                       type="range"
                       min="0"
                       max="100"
-                      value={adjustments.sharpness}
+                      value={adjustments.sharpness ?? 0}
                       onChange={(e) => handleSliderChange('sharpness', parseInt(e.target.value))}
                       className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
                     />
@@ -492,13 +731,21 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
               {/* TAB 2: BACKGROUND REMOVAL */}
               {activeTab === 'background' && (
                 <div className="space-y-4 bg-gray-50/70 p-4 rounded-2xl border border-gray-200/80">
-                  <div>
-                    <span className="text-xs font-bold text-gray-800 uppercase tracking-wider block mb-1">
-                      Smart Background Cutout
+                  {/* Photo Background Remover Header */}
+                  <div className="bg-white p-3.5 rounded-2xl border border-gray-200 shadow-2xs flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                        <Scissors className="w-4 h-4 text-emerald-600" />
+                        Normal Photo Background Remover
+                      </span>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        Cleanly removes photo background to transparent alpha without cutting into clothes or hair.
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0 flex items-center gap-1">
+                      <Check className="w-3 h-3 text-emerald-600" />
+                      Normal Remover
                     </span>
-                    <p className="text-[11px] text-gray-500 leading-snug">
-                      Isolates the applicant and replaces background with pure studio white or transparent canvas.
-                    </p>
                   </div>
 
                   {/* Cutout Action Buttons */}
@@ -519,7 +766,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                         )}
                       </div>
                       <p className="text-[11px] text-emerald-700/80">
-                        Removes solid/photo backdrop to transparent alpha.
+                        Removes backdrop to transparent alpha.
                       </p>
                     </button>
 
@@ -539,7 +786,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                         )}
                       </div>
                       <p className="text-[11px] text-gray-500">
-                        Clean pure passport white standard background.
+                        Official pure passport white standard.
                       </p>
                     </button>
 
@@ -559,7 +806,7 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                         )}
                       </div>
                       <p className="text-[11px] text-blue-700/80">
-                        Official Ethiopian biometric studio sky blue tint.
+                        Official ID studio sky blue tint.
                       </p>
                     </button>
 
@@ -579,48 +826,106 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                         )}
                       </div>
                       <p className="text-[11px] text-gray-600">
-                        Soft light neutral gray for seamless card blending.
+                        Soft light neutral gray for clean card blending.
                       </p>
                     </button>
                   </div>
 
-                  {/* Cutout Precision Calibration Slider */}
-                  <div className="bg-white p-3.5 rounded-xl border border-gray-200 space-y-2">
-                    <div className="flex items-center justify-between text-xs font-semibold text-gray-800">
-                      <span>Cutout Color Tolerance (Sensitivity)</span>
-                      <span className="font-mono text-emerald-700 font-bold">{bgOptions.tolerance}%</span>
+                  {/* Background Remover Tuning */}
+                  <div className="bg-white p-3.5 rounded-xl border border-gray-200 space-y-3">
+                    {/* Cutout Color Sensitivity Slider */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-gray-600">
+                        <span>Cutout Sensitivity (Tolerance)</span>
+                        <span className="font-mono text-emerald-700 font-bold">{bgOptions.tolerance ?? 30}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="5"
+                        max="70"
+                        value={bgOptions.tolerance ?? 30}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          setBgOptions((prev) => ({ ...prev, tolerance: val }));
+                        }}
+                        className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                      />
+                      <div className="flex justify-between text-[10px] text-gray-500 font-mono pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBgOptions((prev) => ({ ...prev, tolerance: 15 }));
+                            if (bgRemovedApplied) {
+                              handleRunBackgroundRemoval(customBgColor);
+                            }
+                          }}
+                          className={`hover:text-emerald-700 cursor-pointer underline decoration-dotted ${bgOptions.tolerance === 15 ? 'text-emerald-700 font-bold' : ''}`}
+                        >
+                          Conservative (15%)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBgOptions((prev) => ({ ...prev, tolerance: 30 }));
+                            if (bgRemovedApplied) {
+                              handleRunBackgroundRemoval(customBgColor);
+                            }
+                          }}
+                          className={`hover:text-emerald-700 cursor-pointer underline decoration-dotted ${bgOptions.tolerance === 30 ? 'text-emerald-700 font-bold' : ''}`}
+                        >
+                          Standard (30%)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBgOptions((prev) => ({ ...prev, tolerance: 50 }));
+                            if (bgRemovedApplied) {
+                              handleRunBackgroundRemoval(customBgColor);
+                            }
+                          }}
+                          className={`hover:text-emerald-700 cursor-pointer underline decoration-dotted ${bgOptions.tolerance === 50 ? 'text-emerald-700 font-bold' : ''}`}
+                        >
+                          Deep Cut (50%)
+                        </button>
+                      </div>
                     </div>
-                    <input
-                      type="range"
-                      min="5"
-                      max="80"
-                      value={bgOptions.tolerance}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value);
-                        setBgOptions((prev) => ({ ...prev, tolerance: val }));
-                      }}
-                      className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
-                    />
-                    <div className="flex justify-between text-[10px] text-gray-400 font-mono">
-                      <span>Strict (5%)</span>
-                      <span>Balanced (32%)</span>
-                      <span>Aggressive (80%)</span>
+
+                    {/* Edge Feathering Slider */}
+                    <div className="space-y-1 pt-1 border-t border-gray-100">
+                      <div className="flex justify-between text-[11px] text-gray-600">
+                        <span>Edge Feathering</span>
+                        <span className="font-mono text-emerald-700 font-bold">{bgOptions.feather ?? 2}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="5"
+                        step="0.5"
+                        value={bgOptions.feather ?? 2}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setBgOptions((prev) => ({ ...prev, feather: val }));
+                        }}
+                        className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                      />
                     </div>
+
+                    {/* Re-apply button */}
                     <button
                       type="button"
                       onClick={() => handleRunBackgroundRemoval(customBgColor)}
                       disabled={isRemovingBg}
-                      className="w-full mt-2 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="w-full mt-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
                     >
                       {isRemovingBg ? (
                         <>
-                          <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                          Extracting Subject...
+                          <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                          Removing Background...
                         </>
                       ) : (
                         <>
-                          <Scissors className="w-3 h-3 text-emerald-400" />
-                          Re-Apply Cutout with New Tolerance
+                          <Scissors className="w-3.5 h-3.5 text-emerald-400" />
+                          Apply Background Removal
                         </>
                       )}
                     </button>
@@ -731,6 +1036,8 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
                   </div>
                 </div>
               )}
+
+
             </div>
           </div>
 
@@ -758,29 +1065,29 @@ export const PhotoAdjustModal: React.FC<PhotoAdjustModalProps> = ({
             <button
               type="button"
               onClick={() => handleApplyToCard('primary')}
-              className="flex-1 sm:flex-none px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              className="flex-1 sm:flex-none px-3.5 py-2.5 bg-white hover:bg-emerald-50 text-emerald-900 border border-emerald-300 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
             >
-              <Check className="w-4 h-4" />
-              Apply to Photo 1 (Primary)
+              <Check className="w-4 h-4 text-emerald-600" />
+              Apply to Photo 1 Only
             </button>
 
             <button
               type="button"
               onClick={() => handleApplyToCard('secondary')}
-              className="flex-1 sm:flex-none px-4 py-2.5 bg-cyan-700 hover:bg-cyan-800 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              className="flex-1 sm:flex-none px-3.5 py-2.5 bg-white hover:bg-cyan-50 text-cyan-900 border border-cyan-300 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
               title="Apply adjusted photo to the bottom right secondary portrait"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              Apply to Photo 2 (Security)
+              <Sparkles className="w-3.5 h-3.5 text-cyan-600" />
+              Apply to Photo 2 Only
             </button>
 
             <button
               type="button"
               onClick={() => handleApplyToCard('both')}
-              className="w-full sm:w-auto px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-md ring-2 ring-emerald-400/40 transition-all cursor-pointer flex items-center justify-center gap-1.5"
             >
-              <Layers className="w-3.5 h-3.5 text-emerald-400" />
-              Apply to Both Photos
+              <Layers className="w-4 h-4 text-amber-300" />
+              <span>⚡ Apply to Both Photos (Transparent)</span>
             </button>
           </div>
         </div>

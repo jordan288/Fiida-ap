@@ -25,6 +25,7 @@ import {
   Layers
 } from 'lucide-react';
 import { BoundingBox, detectPhotoRegion, cropPhotoFromCanvas, getDefaultPhotoBox } from '../utils/photoDetection';
+import { detectPortraitByColorThresholding } from '../utils/portraitThresholdDetector';
 
 interface PhotoCropModalProps {
   isOpen: boolean;
@@ -32,7 +33,7 @@ interface PhotoCropModalProps {
   sourceImageUrl: string; // The full page canvas or uploaded image
   currentPhotoUrl?: string;
   applicantName?: string;
-  onApplyCrop: (croppedPhotoUrl: string) => void;
+  onApplyCrop: (croppedPhotoUrl: string, cropBox?: BoundingBox) => void;
 }
 
 export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
@@ -85,7 +86,7 @@ export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
         setImgNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
         setImageLoaded(true);
 
-        // Run smart detector automatically on load
+        // Run color thresholding portrait detector automatically on load
         try {
           const canvas = document.createElement('canvas');
           canvas.width = img.naturalWidth;
@@ -93,9 +94,15 @@ export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0);
-            const detected = detectPhotoRegion(canvas);
-            setCropBox(detected);
-            updateLivePreview(img, detected);
+            try {
+              const thresholdResult = detectPortraitByColorThresholding(canvas);
+              setCropBox(thresholdResult.boundingBox);
+              updateLivePreview(img, thresholdResult.boundingBox);
+            } catch {
+              const detected = detectPhotoRegion(canvas);
+              setCropBox(detected);
+              updateLivePreview(img, detected);
+            }
           }
         } catch {
           const fallback = getDefaultPhotoBox(img.naturalWidth, img.naturalHeight);
@@ -157,7 +164,7 @@ export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
         ctx.drawImage(imgElement, box.x, box.y, box.width, box.height, 0, 0, targetW, targetH);
       }
 
-      setLivePreviewUrl(canvas.toDataURL('image/jpeg', 0.92));
+      setLivePreviewUrl(canvas.toDataURL('image/png'));
     } catch (e) {
       console.warn('Live preview update failed:', e);
     }
@@ -170,7 +177,7 @@ export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
     }
   }, [cropBox, rotation, brightness, contrastVal, imageLoaded, updateLivePreview]);
 
-  // Smart Auto-Detect Button Handler
+  // Smart Auto-Detect Button Handler (Color Thresholding & Portrait Silhouette)
   const handleAutoDetect = () => {
     if (!imageRef.current) return;
     const img = imageRef.current;
@@ -180,8 +187,15 @@ export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.drawImage(img, 0, 0);
-      const detected = detectPhotoRegion(canvas);
-      setCropBox(detected);
+      try {
+        const thresholdResult = detectPortraitByColorThresholding(canvas);
+        setCropBox(thresholdResult.boundingBox);
+        updateLivePreview(img, thresholdResult.boundingBox);
+      } catch {
+        const detected = detectPhotoRegion(canvas);
+        setCropBox(detected);
+        updateLivePreview(img, detected);
+      }
     }
   };
 
@@ -397,8 +411,8 @@ export const PhotoCropModal: React.FC<PhotoCropModalProps> = ({
       ctx.drawImage(img, cropBox.x, cropBox.y, cropBox.width, cropBox.height, 0, 0, targetWidth, targetHeight);
     }
 
-    const finalPhotoUrl = canvas.toDataURL('image/jpeg', 0.95);
-    onApplyCrop(finalPhotoUrl);
+    const finalPhotoUrl = canvas.toDataURL('image/png');
+    onApplyCrop(finalPhotoUrl, cropBox);
     onClose();
   };
 

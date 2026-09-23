@@ -20,20 +20,55 @@ export interface QrLocation {
 
 /**
  * Checks if a pixel matches human skin tone chrominance locus in YCbCr & RGB space.
+ * Resilient for deep melanated, caramel, olive, and fair portrait complexions.
  */
 export function isSkinPixel(r: number, g: number, b: number): boolean {
-  // RGB rules: Red is highest, Green second, Blue lowest with reasonable difference
-  if (r <= 50 || g <= 35 || b <= 20) return false;
-  if (r <= g || g < b) return false;
-  if (r - g < 10 || r - b < 15) return false;
-  if (Math.abs(r - g) > 130) return false;
+  // 1. Basic non-zero & lower bound criteria
+  if (r < 25 || g < 18 || b < 12) return false;
 
-  // YCbCr transformation
+  // 2. Human skin hue: Red component dominant or equal in melanin/warm skin
+  // Reject pure gray, pure white, pure blue, pure green background
+  if (r < g - 2 || r < b) return false;
+  if (Math.abs(r - g) > 140) return false;
+
+  // 3. YCbCr transformation (Biometric standard space)
   const y = 0.299 * r + 0.587 * g + 0.114 * b;
   const cb = -0.168736 * r - 0.331264 * g + 0.5 * b + 128;
   const cr = 0.5 * r - 0.418688 * g - 0.081312 * b + 128;
 
-  return y > 40 && cb >= 75 && cb <= 135 && cr >= 130 && cr <= 180;
+  const isYCbCrSkin = y > 18 && cb >= 66 && cb <= 145 && cr >= 123 && cr <= 192;
+
+  // 4. Normalized RGB space check for natural lighting and shadows
+  const sum = r + g + b;
+  if (sum > 0) {
+    const nr = r / sum;
+    const ng = g / sum;
+    const isNormRgbSkin = nr >= 0.32 && nr <= 0.68 && ng >= 0.22 && ng <= 0.44 && nr >= ng;
+    if (isYCbCrSkin || (isNormRgbSkin && y > 24)) {
+      return true;
+    }
+  }
+
+  // 5. HSV skin locus check for warm melanin and shaded portraits
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  const s = max === 0 ? 0 : d / max;
+  const v = max / 255;
+
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) {
+      h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+    } else if (max === g) {
+      h = ((b - r) / d + 2) * 60;
+    } else {
+      h = ((r - g) / d + 4) * 60;
+    }
+  }
+
+  const isHsvSkin = ((h >= 0 && h <= 54) || h >= 335) && s >= 0.08 && s <= 0.85 && v >= 0.14;
+  return isYCbCrSkin || isHsvSkin;
 }
 
 /**
@@ -312,17 +347,23 @@ export function getDefaultPhotoBox(canvasWidth: number, canvasHeight: number): B
 
 /**
  * Crops the high-resolution photo from the source canvas using the given bounding box
+ * Applies high-fidelity bicubic scaling and adaptive facial detail enhancement
  */
 export function cropPhotoFromCanvas(
   sourceCanvas: HTMLCanvasElement | HTMLImageElement,
   box: BoundingBox,
-  targetWidth: number = 480,
-  targetHeight: number = 640
+  targetWidth: number = 960,
+  targetHeight: number = 1280,
+  enhanceDetail: boolean = true
 ): string {
+  // Ensure we produce at least double-DPI resolution for ID print clarity
+  const finalW = Math.max(targetWidth, Math.round(box.width * 2));
+  const finalH = Math.max(targetHeight, Math.round(box.height * 2));
+
   const cropCanvas = document.createElement('canvas');
-  cropCanvas.width = targetWidth;
-  cropCanvas.height = targetHeight;
-  const cropCtx = cropCanvas.getContext('2d');
+  cropCanvas.width = finalW;
+  cropCanvas.height = finalH;
+  const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
 
   if (!cropCtx) return '';
 
@@ -338,9 +379,43 @@ export function cropPhotoFromCanvas(
     box.height,
     0,
     0,
-    targetWidth,
-    targetHeight
+    finalW,
+    finalH
   );
 
-  return cropCanvas.toDataURL('image/jpeg', 0.95);
+  // Apply subtle high-frequency detail sharpening for facial acuity
+  if (enhanceDetail && finalW > 10 && finalH > 10) {
+    try {
+      const imgData = cropCtx.getImageData(0, 0, finalW, finalH);
+      const data = imgData.data;
+      const copy = new Uint8ClampedArray(data);
+      const a = 0.35; // Subtle edge boost
+      const edgeWeight = -a / 4;
+      const centerWeight = 1 + a;
+
+      for (let y = 1; y < finalH - 1; y++) {
+        for (let x = 1; x < finalW - 1; x++) {
+          const idx = (y * finalW + x) * 4;
+          if (copy[idx + 3] < 20) continue;
+
+          const top = ((y - 1) * finalW + x) * 4;
+          const bot = ((y + 1) * finalW + x) * 4;
+          const left = (y * finalW + (x - 1)) * 4;
+          const right = (y * finalW + (x + 1)) * 4;
+
+          for (let c = 0; c < 3; c++) {
+            const val =
+              copy[idx + c] * centerWeight +
+              (copy[top + c] + copy[bot + c] + copy[left + c] + copy[right + c]) * edgeWeight;
+            data[idx + c] = Math.min(255, Math.max(0, Math.round(val)));
+          }
+        }
+      }
+      cropCtx.putImageData(imgData, 0, 0);
+    } catch {
+      // Fallback silently if getImageData fails
+    }
+  }
+
+  return cropCanvas.toDataURL('image/png');
 }

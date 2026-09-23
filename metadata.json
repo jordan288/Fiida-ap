@@ -1,6 +1,6 @@
 {
   "name": "Ethiopian Digital ID Card Studio",
-  "description": "Professional Ethiopian Digital ID Card (Fayda) generator and studio to convert verification PDF slips, edit fields, customize coordinates, and export 300 DPI CR80 print-ready ID cards.",
+  "description": "Professional Ethiopian Digital ID Card (Fayda) studio with batch PDF extraction, portrait background remover, custom coordinates calibration, and 300 DPI A4 suite export in PNG, PDF, and JPEG.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

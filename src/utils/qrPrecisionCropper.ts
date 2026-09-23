@@ -26,25 +26,27 @@ export function cropExactQrCode(sourceCanvas: HTMLCanvasElement): ExactQrResult 
   let qrCode: any = null;
   let regionOffset = { x: 0, y: 0 };
 
-  // Pass 1.1: Full canvas scan
-  qrCode = scanCanvasWithJsQR(ctx, 0, 0, width, height);
+  // Pass 1.1: Fast path - Middle-right quadrant (99% of official Fayda slips have the biometric QR here)
+  const qX = Math.floor(width * 0.40);
+  const qY = Math.floor(height * 0.15);
+  const qW = Math.floor(width * 0.58);
+  const qH = Math.floor(height * 0.72);
+  qrCode = scanCanvasWithJsQR(ctx, qX, qY, qW, qH);
+  if (qrCode) {
+    regionOffset = { x: qX, y: qY };
+  }
 
-  // Pass 1.2: Right half (Fayda slips place the biometric QR on the right side)
+  // Pass 1.2: Right half
   if (!qrCode) {
-    const rightX = Math.floor(width * 0.42);
+    const rightX = Math.floor(width * 0.38);
     const rightW = width - rightX;
     qrCode = scanCanvasWithJsQR(ctx, rightX, 0, rightW, height);
     if (qrCode) regionOffset = { x: rightX, y: 0 };
   }
 
-  // Pass 1.3: Middle-right quadrant
+  // Pass 1.3: Full canvas scan (fallback for non-standard or shifted slips)
   if (!qrCode) {
-    const qX = Math.floor(width * 0.40);
-    const qY = Math.floor(height * 0.15);
-    const qW = Math.floor(width * 0.58);
-    const qH = Math.floor(height * 0.70);
-    qrCode = scanCanvasWithJsQR(ctx, qX, qY, qW, qH);
-    if (qrCode) regionOffset = { x: qX, y: qY };
+    qrCode = scanCanvasWithJsQR(ctx, 0, 0, width, height);
   }
 
   // Pass 1.4: High-contrast thresholded sub-canvas
@@ -89,9 +91,8 @@ export function cropExactQrCode(sourceCanvas: HTMLCanvasElement): ExactQrResult 
     const dist = Math.hypot(trX - tlX, trY - tlY);
     const moduleSize = Math.max(2, dist / 35);
 
-    // Expand outward to cover outer finder borders + quiet zone
-    const quietZoneModules = 3;
-    const expansion = Math.round((3.5 + quietZoneModules) * moduleSize);
+    // Tight crop directly around outer finder borders with zero white border expansion
+    const expansion = Math.round(moduleSize * 0.5);
 
     let cropX = Math.max(0, Math.floor(minX - expansion));
     let cropY = Math.max(0, Math.floor(minY - expansion));
@@ -166,26 +167,27 @@ function cropSquareFromCanvas(
     };
   }
 
-  // Pure white quiet-zone background
-  outCtx.fillStyle = '#ffffff';
-  outCtx.fillRect(0, 0, targetOutputSize, targetOutputSize);
+  // Transparent background - frameless with zero white border
+  outCtx.clearRect(0, 0, targetOutputSize, targetOutputSize);
   outCtx.imageSmoothingEnabled = false;
 
-  // Add a neat 3.5% quiet-zone margin around the QR code
-  const pad = Math.round(targetOutputSize * 0.035);
-  const drawSize = targetOutputSize - pad * 2;
-
+  // Zero quiet-zone padding: crop tightly to QR matrix
   outCtx.drawImage(
     sourceCanvas,
     finalX,
     finalY,
     finalSize,
     finalSize,
-    pad,
-    pad,
-    drawSize,
-    drawSize
+    0,
+    0,
+    targetOutputSize,
+    targetOutputSize
   );
+
+  // Strip all white paper background and borders: convert all light pixels to transparent
+  try {
+    applyQrFilterToCanvas(outCtx, targetOutputSize, targetOutputSize, 'enhanced');
+  } catch {}
 
   const qrUrl = outputCanvas.toDataURL('image/png');
 
@@ -280,13 +282,12 @@ function detectVisualQrBoundingBox(
       return null;
     }
 
-    // Expand to quiet zone
-    const qz = Math.round(Math.max(detectedW, detectedH) * 0.05);
+    // Tight to QR matrix: zero white quiet zone border
     return {
-      x: Math.max(0, detectedX - qz),
-      y: Math.max(0, detectedY - qz),
-      width: Math.min(width - detectedX + qz, detectedW + qz * 2),
-      height: Math.min(height - detectedY + qz, detectedH + qz * 2),
+      x: Math.max(0, detectedX),
+      y: Math.max(0, detectedY),
+      width: Math.min(width - detectedX, detectedW),
+      height: Math.min(height - detectedY, detectedH),
     };
   } catch {
     return null;
@@ -496,19 +497,175 @@ function refineQrBoundingBox(
       }
     }
 
-    // Add quiet zone around the detected black module bounds
-    const qz = Math.round(moduleSize * 2.5);
-    const refinedX = Math.max(0, x + minCol - qz);
-    const refinedY = Math.max(0, y + minRow - qz);
-    const refinedW = (maxCol - minCol) + qz * 2;
-    const refinedH = (maxRow - minRow) + qz * 2;
+    // Tight crop directly around the detected black module bounds (0 quiet zone border)
+    const refinedX = Math.max(0, x + minCol);
+    const refinedY = Math.max(0, y + minRow);
+    const refinedW = (maxCol - minCol + 1);
+    const refinedH = (maxRow - minRow + 1);
 
-    if (refinedW > 40 && refinedH > 40) {
+    if (refinedW > 30 && refinedH > 30) {
       return { x: refinedX, y: refinedY, width: refinedW, height: refinedH };
     }
   } catch {}
 
   return { x, y, width: w, height: h };
+}
+
+/**
+ * Strips all white background and border from any QR code image data URL,
+ * cropping tightly to the outermost black modules and returning a 100% transparent PNG.
+ */
+export async function makeQrTransparentAndBorderless(imageSrc: string): Promise<string> {
+  if (!imageSrc || !imageSrc.startsWith('data:image')) return imageSrc;
+  try {
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = reject;
+      img.src = imageSrc;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return imageSrc;
+
+    ctx.drawImage(img, 0, 0);
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imgData.data;
+
+    // Find bounding box of actual dark modules
+    let minX = canvas.width;
+    let minY = canvas.height;
+    let maxX = 0;
+    let maxY = 0;
+    let darkPixelCount = 0;
+
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        const idx = (y * canvas.width + x) * 4;
+        const a = data[idx + 3];
+        if (a < 50) continue;
+        const lum = (data[idx] * 299 + data[idx + 1] * 587 + data[idx + 2] * 114) / 1000;
+        if (lum < 150) {
+          darkPixelCount++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    // If dark pixels exist and there is an outer margin/border
+    if (darkPixelCount > 40 && minX < maxX && minY < maxY) {
+      const tightW = maxX - minX + 1;
+      const tightH = maxY - minY + 1;
+      const tightCanvas = document.createElement('canvas');
+      tightCanvas.width = tightW;
+      tightCanvas.height = tightH;
+      const tightCtx = tightCanvas.getContext('2d', { willReadFrequently: true });
+      if (tightCtx) {
+        tightCtx.drawImage(canvas, minX, minY, tightW, tightH, 0, 0, tightW, tightH);
+        applyQrFilterToCanvas(tightCtx, tightW, tightH, 'enhanced');
+        return tightCanvas.toDataURL('image/png');
+      }
+    }
+
+    // If no tight crop needed, clean background in place safely
+    applyQrFilterToCanvas(ctx, canvas.width, canvas.height, 'enhanced');
+    return canvas.toDataURL('image/png');
+  } catch (err) {
+    console.warn('Could not process QR transparent background:', err);
+    return imageSrc;
+  }
+}
+
+/**
+ * Applies contrast enhancement and removes paper background to transparent,
+ * strictly preserving existing transparency (never turns transparent pixels black).
+ */
+export function applyQrFilterToCanvas(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  filterMode: 'original' | 'enhanced' | 'crispBw' = 'enhanced'
+): void {
+  if (filterMode === 'original') {
+    // Keep raw scan colors and natural contrast
+    return;
+  }
+
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const d = imgData.data;
+
+  // 1. Collect statistics of visible non-transparent pixels (alpha >= 40)
+  let minLum = 255;
+  let maxLum = 0;
+  let sampleCount = 0;
+
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 30) continue; // skip already transparent pixels
+    const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    if (lum < minLum) minLum = lum;
+    if (lum > maxLum) maxLum = lum;
+    sampleCount++;
+  }
+
+  // If mostly transparent or zero contrast, leave untouched
+  if (sampleCount < 40 || maxLum - minLum < 15) {
+    return;
+  }
+
+  const range = maxLum - minLum;
+  // Adaptive thresholds based on actual paper & ink levels
+  const darkThresh = minLum + range * 0.38;
+  const paperThresh = minLum + range * 0.68;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3];
+    // CRITICAL: NEVER turn transparent pixels into opaque black!
+    if (a < 30) {
+      d[i + 3] = 0;
+      continue;
+    }
+
+    const lum = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+
+    if (filterMode === 'enhanced') {
+      // Enhanced mode: Clear white paper to transparent, deepen dark modules
+      if (lum >= paperThresh) {
+        d[i + 3] = 0; // Pure transparent paper background
+      } else if (lum <= darkThresh) {
+        // Deepen dark modules to crisp black while preserving full opacity
+        d[i] = 0;
+        d[i + 1] = 0;
+        d[i + 2] = 0;
+        d[i + 3] = a;
+      } else {
+        // Antialiased edge transition
+        const factor = (paperThresh - lum) / (paperThresh - darkThresh);
+        d[i] = 0;
+        d[i + 1] = 0;
+        d[i + 2] = 0;
+        d[i + 3] = Math.round(a * factor);
+      }
+    } else if (filterMode === 'crispBw') {
+      // Laser B&W mode: Binary deep black QR modules on transparent background
+      const midThresh = (darkThresh + paperThresh) / 2;
+      if (lum >= midThresh) {
+        d[i + 3] = 0; // Transparent background
+      } else {
+        d[i] = 0;
+        d[i + 1] = 0;
+        d[i + 2] = 0;
+        d[i + 3] = 255; // Solid black dot
+      }
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
 }
 
 /**

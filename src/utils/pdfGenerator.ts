@@ -8,6 +8,9 @@ export interface PdfExportOptions {
   includeCropMarks: boolean;
   includeMetadataHeader: boolean;
   bleedMm?: number;
+  mirrorPrint?: boolean; // Horizontal mirror flip for transparent PVC / transfer sheet printing
+  cardWidthMm?: number;
+  cardHeightMm?: number;
 }
 
 export interface JpegExportOptions {
@@ -16,6 +19,38 @@ export interface JpegExportOptions {
   resolutionDpi: 300 | 600;
   includeCropMarks?: boolean;
   includeMetadataHeader?: boolean;
+  mirrorPrint?: boolean; // Horizontal mirror flip for transparent PVC / transfer sheet printing
+}
+
+/**
+ * Mirror an image horizontally (scaleX: -1) for reverse-side transparent PVC / PET sheet printing.
+ */
+export async function mirrorImageDataUrl(dataUrl: string): Promise<string> {
+  if (!dataUrl) return dataUrl;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL('image/png'));
+          return;
+        }
+      } catch (err) {
+        console.warn('Mirror image transformation warning:', err);
+      }
+      resolve(dataUrl);
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
 /**
@@ -81,16 +116,20 @@ export async function generateAndDownloadIdJpeg(
     resolutionDpi: 300,
     includeCropMarks: true,
     includeMetadataHeader: true,
+    mirrorPrint: true,
   },
   onProgress?: (status: string, percent: number) => void
 ): Promise<void> {
+  const shouldMirror = options.mirrorPrint !== false;
   const cleanName = (idData.fullNameEnglish || 'Applicant').replace(/[^a-zA-Z0-9]/g, '_');
   const cleanFan = (idData.fan || 'CARD').replace(/\s+/g, '_');
-  const baseFileName = `Ethiopian_ID_${cleanName}_${cleanFan}`;
+  const mirrorSuffix = shouldMirror ? '_MIRRORED' : '';
+  const baseFileName = `Ethiopian_ID_${cleanName}_${cleanFan}${mirrorSuffix}`;
 
   if (options.layout === 'front_only') {
     onProgress?.('Rendering Front Card at 300 DPI JPEG...', 40);
-    const frontJpeg = await captureCardJpeg(frontElement, options.resolutionDpi, options.quality);
+    const rawFront = await captureCardJpeg(frontElement, options.resolutionDpi, options.quality);
+    const frontJpeg = shouldMirror ? await mirrorImageDataUrl(rawFront) : rawFront;
     downloadDataUrl(frontJpeg, `${baseFileName}_FRONT_300DPI.jpg`);
     onProgress?.('Front JPEG Downloaded!', 100);
     return;
@@ -98,19 +137,23 @@ export async function generateAndDownloadIdJpeg(
 
   if (options.layout === 'back_only') {
     onProgress?.('Rendering Back Card at 300 DPI JPEG...', 40);
-    const backJpeg = await captureCardJpeg(backElement, options.resolutionDpi, options.quality);
+    const rawBack = await captureCardJpeg(backElement, options.resolutionDpi, options.quality);
+    const backJpeg = shouldMirror ? await mirrorImageDataUrl(rawBack) : rawBack;
     downloadDataUrl(backJpeg, `${baseFileName}_BACK_300DPI.jpg`);
     onProgress?.('Back JPEG Downloaded!', 100);
     return;
   }
 
   if (options.layout === 'both_files') {
-    onProgress?.('Rendering Front & Back HD JPEGs...', 30);
-    const frontJpeg = await captureCardJpeg(frontElement, options.resolutionDpi, options.quality);
+    onProgress?.('Rendering Front & Back HD JPEGs...', 25);
+    const [rawFront, rawBack] = await Promise.all([
+      captureCardJpeg(frontElement, options.resolutionDpi, options.quality),
+      captureCardJpeg(backElement, options.resolutionDpi, options.quality),
+    ]);
+    const [frontJpeg, backJpeg] = shouldMirror
+      ? await Promise.all([mirrorImageDataUrl(rawFront), mirrorImageDataUrl(rawBack)])
+      : [rawFront, rawBack];
     downloadDataUrl(frontJpeg, `${baseFileName}_FRONT_300DPI.jpg`);
-    
-    onProgress?.('Rendering Back Card...', 70);
-    const backJpeg = await captureCardJpeg(backElement, options.resolutionDpi, options.quality);
     downloadDataUrl(backJpeg, `${baseFileName}_BACK_300DPI.jpg`);
     
     onProgress?.('Both JPEG files downloaded successfully!', 100);
@@ -119,10 +162,17 @@ export async function generateAndDownloadIdJpeg(
 
   // Default: Combined High-Res Print Sheet JPEG (A4 / Side-by-Side Canvas)
   onProgress?.('Rendering Front & Back 300 DPI Canvas...', 30);
-  const frontJpeg = await captureCardJpeg(frontElement, options.resolutionDpi, options.quality);
-  const backJpeg = await captureCardJpeg(backElement, options.resolutionDpi, options.quality);
+  const [rawFrontJpeg, rawBackJpeg] = await Promise.all([
+    captureCardJpeg(frontElement, options.resolutionDpi, options.quality),
+    captureCardJpeg(backElement, options.resolutionDpi, options.quality),
+  ]);
 
-  onProgress?.('Composing Combined High-Res ID Print Sheet...', 65);
+  onProgress?.(shouldMirror ? 'Mirroring Front & Back for PVC printing...' : 'Composing layout...', 55);
+  const [frontJpeg, backJpeg] = shouldMirror
+    ? await Promise.all([mirrorImageDataUrl(rawFrontJpeg), mirrorImageDataUrl(rawBackJpeg)])
+    : [rawFrontJpeg, rawBackJpeg];
+
+  onProgress?.('Composing Combined High-Res ID Print Sheet...', 75);
 
   const canvas = document.createElement('canvas');
   const scale = options.resolutionDpi === 600 ? 3 : 2;
@@ -151,11 +201,14 @@ export async function generateAndDownloadIdJpeg(
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 32px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('FEDERAL DEMOCRATIC REPUBLIC OF ETHIOPIA — NATIONAL DIGITAL ID (FAYDA)', canvas.width / 2, 45);
+    const headerTitle = shouldMirror 
+      ? 'FEDERAL DEMOCRATIC REPUBLIC OF ETHIOPIA — NATIONAL DIGITAL ID (FAYDA) [MIRROR PRINT]'
+      : 'FEDERAL DEMOCRATIC REPUBLIC OF ETHIOPIA — NATIONAL DIGITAL ID (FAYDA)';
+    ctx.fillText(headerTitle, canvas.width / 2, 45);
 
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '20px sans-serif';
-    ctx.fillText(`Applicant: ${idData.fullNameEnglish} (${idData.fullNameAmharic}) | FAN: ${idData.fan} | 300 DPI CR80 Print Standard`, canvas.width / 2, 80);
+    ctx.fillText(`Applicant: ${idData.fullNameEnglish} (${idData.fullNameAmharic}) | FAN: ${idData.fan} | 300 DPI CR80 Print Standard${shouldMirror ? ' • Mirrored for PVC Transfer' : ''}`, canvas.width / 2, 80);
   }
 
   // Load images onto canvas
@@ -192,14 +245,14 @@ export async function generateAndDownloadIdJpeg(
   ctx.fillStyle = '#475569';
   ctx.font = 'bold 22px sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('FRONT SIDE (CR80 Standard 85.60 × 53.98 mm)', frontX, frontY - 14);
-  ctx.fillText('BACK SIDE (CR80 Standard 85.60 × 53.98 mm)', backX, backY - 14);
+  ctx.fillText(`FRONT SIDE (CR80 Standard 85.60 × 53.98 mm)${shouldMirror ? ' [MIRRORED]' : ''}`, frontX, frontY - 14);
+  ctx.fillText(`BACK SIDE (CR80 Standard 85.60 × 53.98 mm)${shouldMirror ? ' [MIRRORED]' : ''}`, backX, backY - 14);
 
   // Footer note
   ctx.fillStyle = '#94a3b8';
   ctx.font = '18px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(`Fayda ID System • Generated at 300 DPI • Standard PVC Ready • Serial: ${idData.serialNumber || 'FAYDA-CERT-2024'}`, canvas.width / 2, canvas.height - 35);
+  ctx.fillText(`Fayda ID System • Generated at 300 DPI • Standard PVC Ready${shouldMirror ? ' • Mirrored for Inkjet PVC / Transfer Sheet' : ''} • Serial: ${idData.serialNumber || 'FAYDA-CERT-2024'}`, canvas.width / 2, canvas.height - 35);
 
   onProgress?.('Saving JPEG File...', 90);
   const combinedDataUrl = canvas.toDataURL('image/jpeg', options.quality || 0.98);
@@ -230,23 +283,33 @@ export async function generateAndDownloadIdPdf(
     resolutionDpi: 300,
     includeCropMarks: true,
     includeMetadataHeader: true,
+    mirrorPrint: true,
   },
   onProgress?: (status: string, percent: number) => void
 ): Promise<{ frontPngUrl: string; backPngUrl: string }> {
-  onProgress?.('Rendering Front Card layers at 300 DPI...', 20);
-  const frontPngUrl = await captureCardImage(frontElement, options.resolutionDpi);
+  const shouldMirror = options.mirrorPrint !== false;
+  onProgress?.('Rendering Front & Back Card layers at 300 DPI...', 30);
+  const [rawFrontPng, rawBackPng] = await Promise.all([
+    captureCardImage(frontElement, options.resolutionDpi),
+    captureCardImage(backElement, options.resolutionDpi),
+  ]);
 
-  onProgress?.('Rendering Back Card & High-Density QR Matrix...', 50);
-  const backPngUrl = await captureCardImage(backElement, options.resolutionDpi);
+  onProgress?.(shouldMirror ? 'Mirroring Front & Back cards for PVC printing...' : 'Composing PDF layout...', 65);
+  const [frontPngUrl, backPngUrl] = shouldMirror
+    ? await Promise.all([mirrorImageDataUrl(rawFrontPng), mirrorImageDataUrl(rawBackPng)])
+    : [rawFrontPng, rawBackPng];
 
   onProgress?.('Composing High-Resolution Vector PDF Document...', 80);
 
   const cleanName = (idData.fullNameEnglish || 'Applicant').replace(/[^a-zA-Z0-9]/g, '_');
   const cleanFan = (idData.fan || 'CARD').replace(/\s+/g, '_');
-  const fileName = `Ethiopian_ID_${cleanName}_${cleanFan}`;
+  const mirrorSuffix = shouldMirror ? '_MIRRORED' : '';
+  const fileName = `Ethiopian_ID_${cleanName}_${cleanFan}${mirrorSuffix}`;
 
-  const CR80_WIDTH_MM = 85.60;
-  const CR80_HEIGHT_MM = 53.98;
+  const storedWidth = typeof window !== 'undefined' ? parseFloat(localStorage.getItem('fayda_a4_card_width') || '') : NaN;
+  const storedHeight = typeof window !== 'undefined' ? parseFloat(localStorage.getItem('fayda_a4_card_height') || '') : NaN;
+  const CR80_WIDTH_MM = options.cardWidthMm ?? (!isNaN(storedWidth) && storedWidth > 70 ? storedWidth : 86.80);
+  const CR80_HEIGHT_MM = options.cardHeightMm ?? (!isNaN(storedHeight) && storedHeight > 45 ? storedHeight : 54.75);
 
   if (options.format === 'cr80_dual') {
     // Direct CR80 Dual-Page PDF (85.60mm x 53.98mm)
@@ -307,7 +370,10 @@ export async function generateAndDownloadIdPdf(
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(203, 213, 225);
-      doc.text('NATIONAL ID PROGRAM (FAYDA) — OFFICIAL DIGITAL ID CARD PRINT SHEET', PAGE_WIDTH_MM / 2, 16, { align: 'center' });
+      const subHeader = shouldMirror 
+        ? 'NATIONAL ID PROGRAM (FAYDA) — OFFICIAL DIGITAL ID CARD PRINT SHEET [MIRROR PRINT]'
+        : 'NATIONAL ID PROGRAM (FAYDA) — OFFICIAL DIGITAL ID CARD PRINT SHEET';
+      doc.text(subHeader, PAGE_WIDTH_MM / 2, 16, { align: 'center' });
 
       // Verification Bar
       doc.setFillColor(241, 245, 249);
@@ -319,7 +385,7 @@ export async function generateAndDownloadIdPdf(
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.text(`Full Name: ${idData.fullNameEnglish} (${idData.fullNameAmharic})`, 18, 32);
-      doc.text(`FAN: ${idData.fan}`, 18, 37);
+      doc.text(`FAN: ${idData.fan}${shouldMirror ? ' • [MIRROR PRINT FOR PVC FILM]' : ''}`, 18, 37);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
@@ -334,13 +400,13 @@ export async function generateAndDownloadIdPdf(
 
     // --- FRONT SIDE ---
     if (options.includeCropMarks) {
-      drawCropMarks(doc, centerXMm, frontYMm, CR80_WIDTH_MM, CR80_HEIGHT_MM, 'FRONT SIDE (CR80 85.6 × 53.98 mm)');
+      drawCropMarks(doc, centerXMm, frontYMm, CR80_WIDTH_MM, CR80_HEIGHT_MM, `FRONT SIDE (${CR80_WIDTH_MM.toFixed(1)} × ${CR80_HEIGHT_MM.toFixed(1)} mm)`);
     }
     doc.addImage(frontPngUrl, 'PNG', centerXMm, frontYMm, CR80_WIDTH_MM, CR80_HEIGHT_MM, undefined, 'FAST');
 
     // --- BACK SIDE ---
     if (options.includeCropMarks) {
-      drawCropMarks(doc, centerXMm, backYMm, CR80_WIDTH_MM, CR80_HEIGHT_MM, 'BACK SIDE (CR80 85.6 × 53.98 mm)');
+      drawCropMarks(doc, centerXMm, backYMm, CR80_WIDTH_MM, CR80_HEIGHT_MM, `BACK SIDE (${CR80_WIDTH_MM.toFixed(1)} × ${CR80_HEIGHT_MM.toFixed(1)} mm)`);
     }
     doc.addImage(backPngUrl, 'PNG', centerXMm, backYMm, CR80_WIDTH_MM, CR80_HEIGHT_MM, undefined, 'FAST');
 

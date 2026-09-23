@@ -1,5 +1,29 @@
 @import "tailwindcss";
 
+/* Nokia Pure Headline Bold local system & custom font bindings */
+@font-face {
+  font-family: 'Nokia Pure Headline Bold';
+  src: local('Nokia Pure Headline Bold'),
+       local('NokiaPureHeadline-Bold'),
+       local('Nokia Pure Headline_Bold'),
+       local('Nokia Pure Headline'),
+       local('NokiaPureHeadline'),
+       local('Nokia Pure');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nokia Pure Headline';
+  src: local('Nokia Pure Headline'),
+       local('NokiaPureHeadline'),
+       local('Nokia Pure');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @media print {
   body {
     background: #ffffff !important;

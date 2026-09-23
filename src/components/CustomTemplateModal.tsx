@@ -14,16 +14,32 @@ import {
   ExternalLink,
   ShieldAlert,
   Palette,
-  LayoutTemplate
+  LayoutTemplate,
+  Crosshair,
+  Scan,
+  Hash
 } from 'lucide-react';
-import { TemplateConfig, TemplatePreset } from '../types';
+import { TemplateConfig, TemplatePreset, NumberedTemplate, CoordinatesConfig } from '../types';
 import { PRESET_TEMPLATES, DEFAULT_TEMPLATE_CONFIG } from '../data/defaultData';
+import { NumberedTemplatesManager } from './NumberedTemplatesManager';
+import { 
+  loadNumberedTemplates, 
+  saveNumberedTemplates, 
+  getActiveTemplateNumber, 
+  setActiveTemplateNumber 
+} from '../utils/templateStorage';
 
 interface CustomTemplateModalProps {
   isOpen: boolean;
   onClose: () => void;
   templateConfig: TemplateConfig;
   setTemplateConfig: React.Dispatch<React.SetStateAction<TemplateConfig>>;
+  config?: CoordinatesConfig;
+  setConfig?: React.Dispatch<React.SetStateAction<CoordinatesConfig>>;
+  activeTemplateNumber?: number;
+  onSelectTemplateNumber?: (num: number) => void;
+  numberedTemplates?: NumberedTemplate[];
+  onUpdateNumberedTemplates?: (templates: NumberedTemplate[]) => void;
 }
 
 export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
@@ -31,17 +47,77 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
   onClose,
   templateConfig,
   setTemplateConfig,
+  config,
+  setConfig,
+  activeTemplateNumber: propActiveNum,
+  onSelectTemplateNumber: propOnSelectNum,
+  numberedTemplates: propNumberedTemplates,
+  onUpdateNumberedTemplates: propOnUpdateTemplates,
 }) => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'presets' | 'layers'>('upload');
+  const [activeTab, setActiveTab] = useState<'numbered' | 'upload' | 'layers'>('numbered');
   const [frontDragActive, setFrontDragActive] = useState(false);
   const [backDragActive, setBackDragActive] = useState(false);
   const [urlInputFront, setUrlInputFront] = useState('');
   const [urlInputBack, setUrlInputBack] = useState('');
 
+  // Fallback state if props aren't provided
+  const [internalNumberedTemplates, setInternalNumberedTemplates] = useState<NumberedTemplate[]>(() =>
+    loadNumberedTemplates()
+  );
+  const [internalActiveNum, setInternalActiveNum] = useState<number>(() =>
+    getActiveTemplateNumber()
+  );
+
+  const activeNum = propActiveNum ?? internalActiveNum;
+  const templatesList = propNumberedTemplates ?? internalNumberedTemplates;
+
+  const handleSelectTemplateNumber = (num: number) => {
+    if (propOnSelectNum) {
+      propOnSelectNum(num);
+    } else {
+      setActiveTemplateNumber(num);
+      setInternalActiveNum(num);
+      const target = templatesList.find((t) => t.number === num);
+      if (target) {
+        setTemplateConfig(target.config);
+        if (target.coordinates && setConfig) {
+          setConfig(target.coordinates);
+        }
+      }
+    }
+  };
+
+  const handleUpdateTemplates = (updated: NumberedTemplate[]) => {
+    if (propOnUpdateTemplates) {
+      propOnUpdateTemplates(updated);
+    } else {
+      saveNumberedTemplates(updated);
+      setInternalNumberedTemplates(updated);
+    }
+  };
+
   const frontFileInputRef = useRef<HTMLInputElement>(null);
   const backFileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
+
+  // Strips all synthetic graphic layers and built-in labels so only the custom template and fields are used
+  const applyPureTemplateCorrectionMode = () => {
+    setTemplateConfig((prev) => ({
+      ...prev,
+      sourceType: 'custom',
+      showBuiltinGuilloche: false,
+      showHeader: false,
+      showFlag: false,
+      showEmblem: false,
+      showFooterNotice: false,
+      showFieldLabels: false,
+      showFanContainerBox: false,
+      showBarcodeBox: false,
+      showCornerMarks: false,
+      showNationality: false,
+    }));
+  };
 
   const handleFileUpload = (file: File, side: 'front' | 'back') => {
     if (!file.type.startsWith('image/')) {
@@ -57,6 +133,17 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
         sourceType: 'custom',
         [side === 'front' ? 'frontImageUrl' : 'backImageUrl']: dataUrl,
         [side === 'front' ? 'frontFileName' : 'backFileName']: file.name,
+        // When adding templates, just take the template as the canvas!
+        showBuiltinGuilloche: false,
+        showHeader: false,
+        showFlag: false,
+        showEmblem: false,
+        showFooterNotice: false,
+        showFieldLabels: false,
+        showFanContainerBox: false,
+        showBarcodeBox: false,
+        showCornerMarks: false,
+        showNationality: false,
       }));
     };
     reader.readAsDataURL(file);
@@ -116,37 +203,40 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 px-6 pt-4 border-b border-slate-800 bg-slate-900/60">
+        <div className="flex items-center gap-2 px-6 pt-4 border-b border-slate-800 bg-slate-900/60 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('numbered')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer shrink-0 ${
+              activeTab === 'numbered'
+                ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Hash className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Numbered Templates ({templatesList.length})</span>
+            <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 rounded font-mono font-bold">
+              Active #{activeNum}
+            </span>
+          </button>
+
           <button
             onClick={() => setActiveTab('upload')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer shrink-0 ${
               activeTab === 'upload'
                 ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>Upload My Template</span>
+            <span>Upload Blank Images</span>
             {(templateConfig.frontImageUrl || templateConfig.backImageUrl) && (
               <span className="w-2 h-2 rounded-full bg-emerald-400" />
             )}
           </button>
 
           <button
-            onClick={() => setActiveTab('presets')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${
-              activeTab === 'presets'
-                ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Template Presets Gallery</span>
-          </button>
-
-          <button
             onClick={() => setActiveTab('layers')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer shrink-0 ${
               activeTab === 'layers'
                 ? 'border-emerald-500 text-emerald-400 bg-emerald-500/5'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -160,13 +250,57 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
         {/* Tab Content Area */}
         <div className="p-6 space-y-6 max-h-[65vh] overflow-y-auto">
           
+          {/* ================= TAB: NUMBERED TEMPLATES (SAVED BY NUMBER) ================= */}
+          {activeTab === 'numbered' && (
+            <NumberedTemplatesManager
+              currentConfig={templateConfig}
+              setTemplateConfig={setTemplateConfig}
+              currentCoordinates={config}
+              setCoordinates={setConfig}
+              activeTemplateNumber={activeNum}
+              onSelectTemplateNumber={handleSelectTemplateNumber}
+              numberedTemplates={templatesList}
+              onUpdateNumberedTemplates={handleUpdateTemplates}
+              onClose={onClose}
+            />
+          )}
+
           {/* ================= TAB 1: UPLOAD TEMPLATES ================= */}
           {activeTab === 'upload' && (
             <div className="space-y-6">
-              <div className="bg-emerald-950/30 border border-emerald-800/40 rounded-2xl p-4 flex items-start gap-3 text-xs text-emerald-200">
+              {/* Position Correction Mode Notice & Action Banner */}
+              <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+                    <Scan className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <strong className="text-emerald-200">Position Correction & Just Template Mode</strong>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-mono px-1.5 py-0.2 rounded border border-emerald-500/30">
+                        Corners (0,0) - (1012,638)
+                      </span>
+                    </div>
+                    <p className="text-emerald-300/80 text-[11px] mt-0.5">
+                      When adding templates, all synthetic built-in layers and headers are automatically cleared so <strong>only your template</strong> is used, and the 4 template corners are marked for exact position correction.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={applyPureTemplateCorrectionMode}
+                  className="shrink-0 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all shadow-md cursor-pointer text-xs"
+                  title="Strip all built-in background graphics, headers, and labels to use just the template"
+                >
+                  <Crosshair className="w-3.5 h-3.5" />
+                  <span>Take Just Template</span>
+                </button>
+              </div>
+
+              <div className="bg-slate-950/40 border border-slate-800/80 rounded-2xl p-4 flex items-start gap-3 text-xs text-slate-300">
                 <FileCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                 <p>
-                  <strong>Template Tip:</strong> Upload high-resolution empty background templates (ideal ratio 1012×638 px / CR80 standard 85.6mm×53.98mm). If your template already includes text labels (e.g., &quot;Full Name&quot;), use the <strong>Layer Controls</strong> tab to hide built-in labels so only your data is printed!
+                  <strong>Template Tip:</strong> Upload high-resolution empty background templates (ideal ratio 1012×638 px / CR80 standard 85.6mm×53.98mm). The 4-corner calibration markers will outline your template corners accurately.
                 </p>
               </div>
 
@@ -199,6 +333,25 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                           alt="Front Template Preview"
                           className="w-full h-full object-cover"
                         />
+                        {/* 4 Corner Markers on Preview Thumbnail */}
+                        <div className="absolute inset-0 pointer-events-none">
+                          <div className="absolute top-1 left-1 w-3.5 h-3.5 border-t-2 border-l-2 border-emerald-400 shadow-sm" />
+                          <div className="absolute top-1 right-1 w-3.5 h-3.5 border-t-2 border-r-2 border-emerald-400 shadow-sm" />
+                          <div className="absolute bottom-1 left-1 w-3.5 h-3.5 border-b-2 border-l-2 border-emerald-400 shadow-sm" />
+                          <div className="absolute bottom-1 right-1 w-3.5 h-3.5 border-b-2 border-r-2 border-emerald-400 shadow-sm" />
+                          <span className="absolute top-1.5 left-4 bg-slate-950/80 text-[8px] font-mono text-emerald-300 px-1 rounded">
+                            (0,0)
+                          </span>
+                          <span className="absolute top-1.5 right-4 bg-slate-950/80 text-[8px] font-mono text-emerald-300 px-1 rounded">
+                            (1012,0)
+                          </span>
+                          <span className="absolute bottom-1.5 left-4 bg-slate-950/80 text-[8px] font-mono text-emerald-300 px-1 rounded">
+                            (0,638)
+                          </span>
+                          <span className="absolute bottom-1.5 right-4 bg-slate-950/80 text-[8px] font-mono text-emerald-300 px-1 rounded">
+                            (1012,638)
+                          </span>
+                        </div>
                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-3 transition-opacity">
                           <button
                             onClick={() => frontFileInputRef.current?.click()}
@@ -273,7 +426,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                       <input
                         type="url"
                         placeholder="https://.../front_template.png"
-                        value={urlInputFront}
+                        value={urlInputFront || ''}
                         onChange={(e) => setUrlInputFront(e.target.value)}
                         className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                       />
@@ -285,6 +438,15 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                               sourceType: 'custom',
                               frontImageUrl: urlInputFront.trim(),
                               frontFileName: 'Web URL Template',
+                              showBuiltinGuilloche: false,
+                              showHeader: false,
+                              showFlag: false,
+                              showEmblem: false,
+                              showFooterNotice: false,
+                              showFieldLabels: false,
+                              showFanContainerBox: false,
+                              showBarcodeBox: false,
+                              showCornerMarks: true,
                             }));
                             setUrlInputFront('');
                           }
@@ -324,6 +486,25 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                           alt="Back Template Preview"
                           className="w-full h-full object-cover"
                         />
+                        {/* 4 Corner Markers on Preview Thumbnail */}
+                        <div className="absolute inset-0 pointer-events-none">
+                          <div className="absolute top-1 left-1 w-3.5 h-3.5 border-t-2 border-l-2 border-cyan-400 shadow-sm" />
+                          <div className="absolute top-1 right-1 w-3.5 h-3.5 border-t-2 border-r-2 border-cyan-400 shadow-sm" />
+                          <div className="absolute bottom-1 left-1 w-3.5 h-3.5 border-b-2 border-l-2 border-cyan-400 shadow-sm" />
+                          <div className="absolute bottom-1 right-1 w-3.5 h-3.5 border-b-2 border-r-2 border-cyan-400 shadow-sm" />
+                          <span className="absolute top-1.5 left-4 bg-slate-950/80 text-[8px] font-mono text-cyan-300 px-1 rounded">
+                            (0,0)
+                          </span>
+                          <span className="absolute top-1.5 right-4 bg-slate-950/80 text-[8px] font-mono text-cyan-300 px-1 rounded">
+                            (1012,0)
+                          </span>
+                          <span className="absolute bottom-1.5 left-4 bg-slate-950/80 text-[8px] font-mono text-cyan-300 px-1 rounded">
+                            (0,638)
+                          </span>
+                          <span className="absolute bottom-1.5 right-4 bg-slate-950/80 text-[8px] font-mono text-cyan-300 px-1 rounded">
+                            (1012,638)
+                          </span>
+                        </div>
                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-3 transition-opacity">
                           <button
                             onClick={() => backFileInputRef.current?.click()}
@@ -398,7 +579,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                       <input
                         type="url"
                         placeholder="https://.../back_template.png"
-                        value={urlInputBack}
+                        value={urlInputBack || ''}
                         onChange={(e) => setUrlInputBack(e.target.value)}
                         className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                       />
@@ -410,6 +591,15 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                               sourceType: 'custom',
                               backImageUrl: urlInputBack.trim(),
                               backFileName: 'Web URL Template',
+                              showBuiltinGuilloche: false,
+                              showHeader: false,
+                              showFlag: false,
+                              showEmblem: false,
+                              showFooterNotice: false,
+                              showFieldLabels: false,
+                              showFanContainerBox: false,
+                              showBarcodeBox: false,
+                              showCornerMarks: true,
                             }));
                             setUrlInputBack('');
                           }
@@ -450,14 +640,14 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
 
                   <div>
                     <label className="text-[11px] font-bold text-slate-300 block mb-1">
-                      Template Opacity: {Math.round(templateConfig.opacity * 100)}%
+                      Template Opacity: {Math.round((templateConfig.opacity ?? 1.0) * 100)}%
                     </label>
                     <input
                       type="range"
                       min="0.1"
                       max="1.0"
                       step="0.05"
-                      value={templateConfig.opacity}
+                      value={templateConfig.opacity ?? 1.0}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -491,62 +681,6 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
             </div>
           )}
 
-          {/* ================= TAB 2: PRESET GALLERY ================= */}
-          {activeTab === 'presets' && (
-            <div className="space-y-4">
-              <p className="text-xs text-slate-400">
-                Choose a pre-styled template archetype tailored for various printing materials and security levels:
-              </p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {PRESET_TEMPLATES.map((preset) => {
-                  const isSelected = templateConfig.presetId === preset.id && templateConfig.sourceType !== 'custom';
-                  return (
-                    <div
-                      key={preset.id}
-                      onClick={() => handleApplyPreset(preset)}
-                      className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
-                        isSelected
-                          ? 'border-emerald-500 bg-emerald-950/30 ring-2 ring-emerald-500/50'
-                          : 'border-slate-800 bg-slate-950/50 hover:border-slate-700 hover:bg-slate-950/80'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <span
-                            className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider"
-                            style={{
-                              backgroundColor: `${preset.themeColor}20`,
-                              color: preset.themeColor,
-                              border: `1px solid ${preset.themeColor}40`,
-                            }}
-                          >
-                            {preset.badge}
-                          </span>
-                          {isSelected && (
-                            <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-400">
-                              <Check className="w-3.5 h-3.5" />
-                              Active
-                            </span>
-                          )}
-                        </div>
-                        <h4 className="font-bold text-sm text-white mb-1">{preset.name}</h4>
-                        <p className="text-xs text-slate-400 leading-relaxed">{preset.description}</p>
-                      </div>
-
-                      <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
-                        <span>CR80 300 DPI Ready</span>
-                        <span className="text-emerald-400 font-semibold group-hover:underline">
-                          Select Preset →
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
           {/* ================= TAB 3: LAYER & LABEL CONTROLS ================= */}
           {activeTab === 'layers' && (
             <div className="space-y-6">
@@ -561,6 +695,33 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   
+                  {/* Toggle Corner Calibration Marks */}
+                  <label className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-emerald-500/40 hover:border-emerald-500/60 cursor-pointer transition-all sm:col-span-2">
+                    <div>
+                      <div className="font-bold text-xs text-white flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                        <span>Mark Template Corners (የማዕዘን ምልክቶች)</span>
+                        <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.2 rounded font-mono">
+                          Position Correction
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Overlay 4-corner L-registration marks &amp; coordinates at (0,0), (1012,0), (0,638), (1012,638) for exact alignment.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(templateConfig.showCornerMarks)}
+                      onChange={(e) =>
+                        setTemplateConfig((prev) => ({
+                          ...prev,
+                          showCornerMarks: e.target.checked,
+                        }))
+                      }
+                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                    />
+                  </label>
+
                   {/* Toggle Field Labels */}
                   <label className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all">
                     <div>
@@ -569,68 +730,11 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showFieldLabels}
+                      checked={Boolean(templateConfig.showFieldLabels)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
                           showFieldLabels: e.target.checked,
-                        }))
-                      }
-                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
-                    />
-                  </label>
-
-                  {/* Toggle Built-in Header */}
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all">
-                    <div>
-                      <div className="font-bold text-xs text-white">Show Top Header & Logo</div>
-                      <div className="text-[10px] text-slate-400">Ethiopian Digital ID Card title & badge</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={templateConfig.showHeader}
-                      onChange={(e) =>
-                        setTemplateConfig((prev) => ({
-                          ...prev,
-                          showHeader: e.target.checked,
-                        }))
-                      }
-                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
-                    />
-                  </label>
-
-                  {/* Toggle Flag */}
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all">
-                    <div>
-                      <div className="font-bold text-xs text-white">Show Ethiopian Flag</div>
-                      <div className="text-[10px] text-slate-400">Top-left tri-color national emblem</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={templateConfig.showFlag}
-                      onChange={(e) =>
-                        setTemplateConfig((prev) => ({
-                          ...prev,
-                          showFlag: e.target.checked,
-                        }))
-                      }
-                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
-                    />
-                  </label>
-
-                  {/* Toggle Watermark */}
-                  <label className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all">
-                    <div>
-                      <div className="font-bold text-xs text-white">Show Watermark Emblem</div>
-                      <div className="text-[10px] text-slate-400">Translucent star & &quot;ፋይዳ&quot; watermark</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={templateConfig.showEmblem}
-                      onChange={(e) =>
-                        setTemplateConfig((prev) => ({
-                          ...prev,
-                          showEmblem: e.target.checked,
                         }))
                       }
                       className="w-4 h-4 accent-emerald-500 cursor-pointer"
@@ -648,7 +752,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showFrontBarcode !== false}
+                      checked={Boolean(templateConfig.showFrontBarcode !== false)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -667,7 +771,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showFrontFan !== false}
+                      checked={Boolean(templateConfig.showFrontFan !== false)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -689,7 +793,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showSecondaryPhoto !== false}
+                      checked={Boolean(templateConfig.showSecondaryPhoto !== false)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -742,7 +846,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showFanContainerBox}
+                      checked={Boolean(templateConfig.showFanContainerBox)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -761,7 +865,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showBarcodeBox}
+                      checked={Boolean(templateConfig.showBarcodeBox)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -780,7 +884,7 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showFooterNotice}
+                      checked={Boolean(templateConfig.showFooterNotice)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
@@ -799,11 +903,32 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                     </div>
                     <input
                       type="checkbox"
-                      checked={templateConfig.showBuiltinGuilloche}
+                      checked={Boolean(templateConfig.showBuiltinGuilloche)}
                       onChange={(e) =>
                         setTemplateConfig((prev) => ({
                           ...prev,
                           showBuiltinGuilloche: e.target.checked,
+                        }))
+                      }
+                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                    />
+                  </label>
+
+                  {/* Toggle Nationality Layer */}
+                  <label className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all">
+                    <div>
+                      <div className="font-bold text-xs text-white">Nationality Layer (ዜግነት)</div>
+                      <div className="text-[10px] text-slate-400">
+                        Show &quot;ኢትዮጵያዊ | Ethiopian&quot; on back (Removed by default / standard Fayda omits it)
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(templateConfig.showNationality)}
+                      onChange={(e) =>
+                        setTemplateConfig((prev) => ({
+                          ...prev,
+                          showNationality: e.target.checked,
                         }))
                       }
                       className="w-4 h-4 accent-emerald-500 cursor-pointer"

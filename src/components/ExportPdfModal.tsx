@@ -14,9 +14,13 @@ import {
   CheckCircle2,
   FileCheck,
   FileText,
-  Save
+  Save,
+  Ruler,
+  Plus,
+  Minus,
+  RotateCcw,
 } from 'lucide-react';
-import { CoordinatesConfig, IdCardData, TemplateConfig, AppSettings } from '../types';
+import { CoordinatesConfig, IdCardData, TemplateConfig, AppSettings, A4CardSizePreset, A4_CARD_SIZE_PRESETS } from '../types';
 import { CardRenderer } from './CardRenderer';
 import { generateAndDownloadIdPdf, generateAndDownloadIdJpeg, PdfExportOptions, JpegExportOptions } from '../utils/pdfGenerator';
 import { loadSavedAppSettings, saveAppSettingsToStorage } from './AppSettingsModal';
@@ -48,6 +52,70 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
   const [includeCropMarks, setIncludeCropMarks] = useState<boolean>(currentSettings.includeCropMarks !== false);
   const [includeMetadataHeader, setIncludeMetadataHeader] = useState<boolean>(currentSettings.includeMetadataHeader !== false);
   const [saveAsDefault, setSaveAsDefault] = useState<boolean>(true);
+
+  // A4 Card Sizing & Anti-Shrink state
+  const [cardWidthMm, setCardWidthMm] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? parseFloat(localStorage.getItem('fayda_a4_card_width') || '') : NaN;
+    return !isNaN(saved) && saved >= 75 && saved <= 96 ? saved : 86.80;
+  });
+  const [cardHeightMm, setCardHeightMm] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? parseFloat(localStorage.getItem('fayda_a4_card_height') || '') : NaN;
+    return !isNaN(saved) && saved >= 45 && saved <= 65 ? saved : 54.75;
+  });
+  const [sizePreset, setSizePreset] = useState<A4CardSizePreset>(() => {
+    const saved = typeof window !== 'undefined' ? (localStorage.getItem('fayda_a4_card_size_preset') as A4CardSizePreset) : null;
+    return saved && A4_CARD_SIZE_PRESETS[saved] ? saved : 'oversized';
+  });
+
+  const applySizePreset = (preset: A4CardSizePreset) => {
+    setSizePreset(preset);
+    const p = A4_CARD_SIZE_PRESETS[preset];
+    if (p) {
+      setCardWidthMm(p.widthMm);
+      setCardHeightMm(p.heightMm);
+      try {
+        localStorage.setItem('fayda_a4_card_size_preset', preset);
+        localStorage.setItem('fayda_a4_card_width', p.widthMm.toString());
+        localStorage.setItem('fayda_a4_card_height', p.heightMm.toString());
+      } catch (e) {}
+    }
+  };
+
+  const adjustWidthBy = (deltaMm: number) => {
+    const newWidth = Math.min(96, Math.max(75, Math.round((cardWidthMm + deltaMm) * 10) / 10));
+    const newHeight = Math.round((newWidth * (53.98 / 85.60)) * 100) / 100;
+    setCardWidthMm(newWidth);
+    setCardHeightMm(newHeight);
+    setSizePreset('custom');
+    try {
+      localStorage.setItem('fayda_a4_card_size_preset', 'custom');
+      localStorage.setItem('fayda_a4_card_width', newWidth.toString());
+      localStorage.setItem('fayda_a4_card_height', newHeight.toString());
+    } catch (e) {}
+  };
+
+  const handleManualWidth = (val: number) => {
+    const safeW = Math.min(96, Math.max(75, Math.round(val * 10) / 10));
+    const autoH = Math.round((safeW * (53.98 / 85.60)) * 100) / 100;
+    setCardWidthMm(safeW);
+    setCardHeightMm(autoH);
+    setSizePreset('custom');
+    try {
+      localStorage.setItem('fayda_a4_card_size_preset', 'custom');
+      localStorage.setItem('fayda_a4_card_width', safeW.toString());
+      localStorage.setItem('fayda_a4_card_height', autoH.toString());
+    } catch (e) {}
+  };
+
+  const handleManualHeight = (val: number) => {
+    const safeH = Math.min(65, Math.max(45, Math.round(val * 10) / 10));
+    setCardHeightMm(safeH);
+    setSizePreset('custom');
+    try {
+      localStorage.setItem('fayda_a4_card_size_preset', 'custom');
+      localStorage.setItem('fayda_a4_card_height', safeH.toString());
+    } catch (e) {}
+  };
 
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<number>(0);
@@ -108,6 +176,8 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
           resolutionDpi,
           includeCropMarks,
           includeMetadataHeader,
+          cardWidthMm: pdfFormat === 'a4_sheet' ? cardWidthMm : undefined,
+          cardHeightMm: pdfFormat === 'a4_sheet' ? cardHeightMm : undefined,
         };
 
         await generateAndDownloadIdPdf(
@@ -362,6 +432,188 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
                         Single CR80 landscape card PDF containing QR code & address.
                       </p>
                     </button>
+                  </div>
+                </div>
+              )}
+
+              {/* A4 CARD PRINT SIZE & ANTI-SHRINK SCALING (When A4 Sheet is chosen) */}
+              {exportType === 'pdf' && pdfFormat === 'a4_sheet' && (
+                <div className="p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-amber-950 uppercase tracking-wider flex items-center gap-1.5">
+                      <Ruler className="w-3.5 h-3.5 text-amber-600" />
+                      <span>A4 Card Print Size (የመታወቂያ ማተሚያ መጠን)</span>
+                    </label>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full font-bold bg-amber-200/80 text-amber-900 border border-amber-400 font-mono">
+                      {cardWidthMm.toFixed(1)} × {cardHeightMm.toFixed(1)} mm
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-amber-800/90 leading-relaxed">
+                    Overcomes printer margin shrinkage so your printed card fits standard PVC pouches and laminating film precisely.
+                  </p>
+
+                  {/* 7 Quick Presets */}
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+                    {(['small', 'standard', 'oversized', 'plus', 'large', 'max', 'xlarge'] as const).map((key) => {
+                      const info = A4_CARD_SIZE_PRESETS[key];
+                      const isSelected = sizePreset === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => applySizePreset(key)}
+                          className={`py-1.5 px-1.5 rounded-xl border text-[11px] font-bold text-center transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                              : 'bg-white border-amber-200/80 text-amber-900 hover:bg-amber-100/60'
+                          }`}
+                          title={info.description}
+                        >
+                          <div className="leading-tight truncate">{info.label}</div>
+                          <div className={`text-[9px] font-mono ${isSelected ? 'text-amber-100' : 'text-amber-700'}`}>{info.tag}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Helper Banner for "It's so small / Printer Shrink" */}
+                  <div className="p-2.5 rounded-xl bg-amber-100/80 border border-amber-300 space-y-2">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <div className="text-[11px] leading-relaxed text-amber-900">
+                        <span className="font-bold block">Are printed IDs coming out too small? (መታወቂያው አነሰ?)</span>
+                        <span>
+                          Printers often shrink A4 prints by 3–6% when "Fit to page" is on. Click below to add size:
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(1.0)}
+                        className="px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] shadow-xs cursor-pointer transition-all active:scale-95 flex items-center gap-1"
+                        title="Add +1.0mm size to overcome slight printer shrinkage"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>+ Add Small Size (+1.0 mm)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(2.0)}
+                        className="px-2.5 py-1.5 rounded-lg bg-amber-200 hover:bg-amber-300 text-amber-950 border border-amber-400 font-bold text-[10.5px] shadow-xs cursor-pointer transition-all active:scale-95 flex items-center gap-1"
+                        title="Add +2.0mm size"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>+ Add (+2.0 mm)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applySizePreset('large')}
+                        className="px-2 py-1 rounded-lg bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 font-semibold text-[10.5px] cursor-pointer transition-colors"
+                        title="Set to Large preset (88.6mm)"
+                      >
+                        Large (88.6mm)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applySizePreset('xlarge')}
+                        className="px-2 py-1 rounded-lg bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 font-semibold text-[10.5px] cursor-pointer transition-colors"
+                        title="Set to XL preset (90.6mm)"
+                      >
+                        XL (90.6mm)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applySizePreset('standard')}
+                        className="px-2 py-1 rounded-lg bg-white hover:bg-amber-50 text-gray-600 border border-gray-300 text-[10px] cursor-pointer transition-colors flex items-center gap-1"
+                        title="Reset to 100% exact CR80 size (85.6mm)"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>CR80 (85.6mm)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Nudge adjustments & Custom Inputs */}
+                  <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                    <span className="text-[11px] text-amber-900 font-medium">Quick Step:</span>
+                    <div className="flex items-center gap-1 flex-wrap justify-end">
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(-1.0)}
+                        className="px-1.5 py-1 rounded-lg bg-white hover:bg-amber-50 border border-amber-300 text-[10px] font-semibold text-gray-700 transition-colors cursor-pointer"
+                        title="Shrink width by 1.0 mm"
+                      >
+                        -1.0mm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(-0.5)}
+                        className="px-1.5 py-1 rounded-lg bg-white hover:bg-amber-50 border border-amber-300 text-[10px] font-semibold text-gray-700 transition-colors cursor-pointer"
+                        title="Shrink width by 0.5 mm"
+                      >
+                        -0.5mm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(0.5)}
+                        className="px-1.5 py-1 rounded-lg bg-white hover:bg-amber-50 border border-amber-300 text-[10px] font-semibold text-amber-900 transition-colors cursor-pointer"
+                        title="Enlarge width by 0.5 mm"
+                      >
+                        +0.5mm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(1.0)}
+                        className="px-1.5 py-1 rounded-lg bg-white hover:bg-amber-50 border border-amber-300 text-[10px] font-semibold text-amber-900 transition-colors cursor-pointer"
+                        title="Enlarge width by 1.0 mm"
+                      >
+                        +1.0mm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustWidthBy(2.0)}
+                        className="px-1.5 py-1 rounded-lg bg-white hover:bg-amber-50 border border-amber-300 text-[10px] font-semibold text-amber-900 transition-colors cursor-pointer"
+                        title="Enlarge width by 2.0 mm"
+                      >
+                        +2.0mm
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Millimeter Inputs */}
+                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-amber-200/60">
+                    <div>
+                      <label className="text-[10px] text-amber-800 block mb-0.5 font-medium">Card Width (mm)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="75"
+                        max="96"
+                        value={cardWidthMm}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 86.8;
+                          handleManualWidth(val);
+                        }}
+                        className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1 text-xs text-amber-950 outline-none focus:border-amber-600 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-amber-800 block mb-0.5 font-medium">Card Height (mm)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="45"
+                        max="65"
+                        value={cardHeightMm}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 54.75;
+                          handleManualHeight(val);
+                        }}
+                        className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1 text-xs text-amber-950 outline-none focus:border-amber-600 font-mono"
+                      />
+                    </div>
                   </div>
                 </div>
               )}

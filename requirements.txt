@@ -1,0 +1,7 @@
+# Python Dependencies for Fayda Slip, Photo & Back FAN Cutter
+pymupdf>=1.23.0       # High-DPI PDF page rasterization & vector text extraction
+pillow>=10.0.0        # High-definition image cropping, Lanczos resampling, color balance
+opencv-python>=4.8.0  # Biometric photo face centering, GrabCut background removal, adaptive thresholding
+pyzbar>=0.1.9         # 100% Offline QR code & Barcode decoding
+numpy>=1.24.0         # Matrix operations for image manipulation
+pdf2image>=1.16.3     # Alternative PDF rasterizer using Poppler

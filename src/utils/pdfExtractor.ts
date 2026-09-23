@@ -1,33 +1,66 @@
 import * as pdfjsLib from 'pdfjs-dist';
+// @ts-expect-error Vite URL import for local worker bundling
+import localPdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// Direct import of worker module so main-thread LoopbackPort is available 100% reliably in sandboxed iframes
+import * as pdfWorkerModule from 'pdfjs-dist/build/pdf.worker.min.mjs';
 import jsQR from 'jsqr';
 import { IdCardData, PdfTextItemWithBox } from '../types';
 import { SAMPLE_ID_DATA } from '../data/defaultData';
-import { convertGcToEth } from './ethiopianCalendar';
+import { convertGcToEth, getTodayIssueDates, calculateExpiryFromIssue, parseDualDate, formatGcyyyyMmDd } from './ethiopianCalendar';
 import { BoundingBox, detectPhotoRegion, cropPhotoFromCanvas, getDefaultPhotoBox } from './photoDetection';
+import { autoCropPortraitFromCanvas } from './portraitThresholdDetector';
 import { cropExactQrCode } from './qrPrecisionCropper';
 import { sanitizeEnglishName, sanitizeAmharicName, sanitizeIdCardData } from './textCleaner';
+import { cropExactBarcode, cropAndEnhanceBarcode, detectBarcodeRegionOnSlip, generateCode128DataUrl } from './barcodeEngine';
+import { autoRemovePhotoBackground } from './imageProcessor';
+import { detectSlipOrientationAndRotate, OrientationDetectionResult, rotateCanvas } from './orientationDetector';
+import { cropHighQualityFanLayer, getEffectiveRegions } from './pdfRegionExtractor';
 
-// Configure pdfjs worker
-if (typeof window !== 'undefined') {
-  try {
-    // Primary: use unpkg version matching installed pdfjs-dist
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '4.10.38'}/build/pdf.worker.min.mjs`;
-  } catch (e) {
-    console.warn('Could not set workerSrc from version:', e);
+/**
+ * Configure PDF.js worker with dual-mode reliability:
+ * 1. Attaches pdfWorkerModule to globalThis.pdfjsWorker so PDF.js can run in the main thread
+ *    without throwing SecurityError in restrictive sandboxed iframes.
+ * 2. Sets GlobalWorkerOptions.workerSrc to the local bundled worker URL.
+ */
+export function ensurePdfjsInitialized() {
+  if (typeof window !== 'undefined') {
+    try {
+      (window as any).pdfjsWorker = pdfWorkerModule;
+      (globalThis as any).pdfjsWorker = pdfWorkerModule;
+      if (localPdfWorkerUrl) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = localPdfWorkerUrl;
+      }
+    } catch (e) {
+      console.warn('Could not initialize PDF.js worker:', e);
+    }
   }
 }
+
+// Initialize immediately on module load
+ensurePdfjsInitialized();
 
 export interface ExtractionResult {
   data: IdCardData;
   pageCanvasUrl?: string;
+  pageCanvas?: HTMLCanvasElement;
   extractedPhotoUrl?: string;
   extractedQrUrl?: string;
+  extractedBarcodeUrl?: string;
+  extractedFinUrl?: string;
   rawText: string;
   detectedFieldsCount: number;
   detectedPhotoBox?: BoundingBox;
   detectedQrBox?: { x: number; y: number; width: number; height: number };
+  detectedBarcodeBox?: { x: number; y: number; width: number; height: number };
   textItems?: PdfTextItemWithBox[];
   canvasDimensions?: { width: number; height: number };
+  orientationInfo?: OrientationDetectionResult;
+}
+
+export interface PdfExtractionOptions {
+  scale?: number;
+  fastBatch?: boolean;
+  onProgress?: (step: string, percent: number) => void;
 }
 
 /**
@@ -75,9 +108,9 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
       // DOB
       const dob = parsed.dob || parsed.dateOfBirth || parsed.birthDate || parsed.birth_date;
       if (dob) {
-        result.dateOfBirth = String(dob).replace(/[\-\.]/g, '/');
-        const eth = convertGcToEth(result.dateOfBirth);
-        if (eth) result.dateOfBirthEth = eth;
+        const dual = parseDualDate(String(dob));
+        result.dateOfBirth = dual.gc || String(dob).replace(/[\-\.]/g, '/');
+        result.dateOfBirthEth = dual.eth || convertGcToEth(result.dateOfBirth) || '';
       }
 
       // Gender
@@ -113,6 +146,12 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
       const kebele = parsed.kebele;
       if (kebele) result.kebele = String(kebele);
 
+      // Serial Number (SN) - Extract purely the number without "SN :" or prefix
+      const sn = parsed.serialNumber || parsed.serialNo || parsed.sn || parsed.serial || parsed.serial_no;
+      if (sn) {
+        result.serialNumber = String(sn).replace(/^(?:SN|Serial\s*(?:Number|No)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-\/]*/i, '').trim();
+      }
+
       return result;
     } catch {
       // Fall through if JSON parsing fails
@@ -142,9 +181,9 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
 
     const dob = extractAttr('dob') || extractAttr('dateOfBirth');
     if (dob) {
-      result.dateOfBirth = dob.replace(/[\-\.]/g, '/');
-      const eth = convertGcToEth(result.dateOfBirth);
-      if (eth) result.dateOfBirthEth = eth;
+      const dual = parseDualDate(dob);
+      result.dateOfBirth = dual.gc || dob.replace(/[\-\.]/g, '/');
+      result.dateOfBirthEth = dual.eth || convertGcToEth(result.dateOfBirth) || '';
     }
 
     const gender = extractAttr('gender') || extractAttr('sex');
@@ -154,6 +193,11 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
 
     const phone = extractAttr('phone') || extractAttr('mobile');
     if (phone) result.phoneNumber = phone;
+
+    const sn = extractAttr('serialNumber') || extractAttr('serialNo') || extractAttr('sn') || extractAttr('serial');
+    if (sn) {
+      result.serialNumber = sn.replace(/^(?:SN|Serial\s*(?:Number|No)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-\/]*/i, '').trim();
+    }
 
     return result;
   }
@@ -180,9 +224,14 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
 
       const dob = params.get('dob');
       if (dob) {
-        result.dateOfBirth = dob.replace(/[\-\.]/g, '/');
-        const eth = convertGcToEth(result.dateOfBirth);
-        if (eth) result.dateOfBirthEth = eth;
+        const dual = parseDualDate(dob);
+        result.dateOfBirth = dual.gc || dob.replace(/[\-\.]/g, '/');
+        result.dateOfBirthEth = dual.eth || convertGcToEth(result.dateOfBirth) || '';
+      }
+
+      const sn = params.get('sn') || params.get('serial') || params.get('serialNumber') || params.get('serial_no');
+      if (sn) {
+        result.serialNumber = sn.replace(/^(?:SN|Serial\s*(?:Number|No)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-\/]*/i, '').trim();
       }
 
       return result;
@@ -214,13 +263,15 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
       } else if (/^(?:name_am|amharic_name|amh_name|ስም)$/i.test(key)) {
         result.fullNameAmharic = sanitizeAmharicName(val);
       } else if (/^(?:dob|birth|birth_date)$/i.test(key)) {
-        result.dateOfBirth = val.replace(/[\-\.]/g, '/');
-        const eth = convertGcToEth(result.dateOfBirth);
-        if (eth) result.dateOfBirthEth = eth;
+        const dual = parseDualDate(val);
+        result.dateOfBirth = dual.gc || formatGcyyyyMmDd(val) || val.replace(/[\-\.]/g, '/');
+        result.dateOfBirthEth = dual.eth || convertGcToEth(result.dateOfBirth) || '';
       } else if (/^(?:sex|gender|ፆታ)$/i.test(key)) {
         result.sex = (val.toLowerCase().startsWith('f') || val.includes('ሴት')) ? 'Female' : 'Male';
       } else if (/^(?:phone|mobile|tel|ስልክ)$/i.test(key)) {
         result.phoneNumber = val;
+      } else if (/^(?:sn|serial|serial_no|serial_number|ተከታታይ|ተከታታይ_ቁጥር)$/i.test(key)) {
+        result.serialNumber = val.replace(/^(?:SN|Serial\s*(?:Number|No)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-\/]*/i, '').trim();
       }
     }
   }
@@ -233,9 +284,9 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
     } else if (!result.fcn && /^\d{4}-\d{4}-\d{4}$/.test(t)) {
       result.fcn = t;
     } else if (!result.dateOfBirth && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}$/.test(t)) {
-      result.dateOfBirth = t.replace(/[\-\.]/g, '/');
-      const eth = convertGcToEth(result.dateOfBirth);
-      if (eth) result.dateOfBirthEth = eth;
+      const dual = parseDualDate(t);
+      result.dateOfBirth = dual.gc || formatGcyyyyMmDd(t) || t.replace(/[\-\.]/g, '/');
+      result.dateOfBirthEth = dual.eth || convertGcToEth(result.dateOfBirth) || '';
     } else if (!result.fullNameAmharic && /^[\u1200-\u137F]{2,}(?:\s+[\u1200-\u137F]{2,}){1,3}$/.test(t)) {
       result.fullNameAmharic = sanitizeAmharicName(t);
     } else if (!result.fullNameEnglish && /^[A-Za-z]{2,}(?:\s+[A-Za-z]{2,}){1,3}$/.test(t)) {
@@ -244,6 +295,11 @@ export function parseFaydaQrPayload(qrContent: string): Partial<IdCardData> {
         result.fullNameEnglish = sanitized;
       }
     }
+  }
+
+  if (result.fan && !result.backFan) {
+    result.backFan = result.fan;
+    result.backFanReadSource = 'qrPayload';
   }
 
   return result;
@@ -280,6 +336,7 @@ export function parseFaydaSlipData(
     if (qrData.woredaEnglish) { result.woredaEnglish = qrData.woredaEnglish; }
     if (qrData.woredaAmharic) { result.woredaAmharic = qrData.woredaAmharic; }
     if (qrData.kebele) { result.kebele = qrData.kebele; }
+    if (qrData.serialNumber) { result.serialNumber = qrData.serialNumber; detectedCount++; }
   }
 
   // 1. FAN (Fayda Identification Number) - 16 digits
@@ -309,7 +366,33 @@ export function parseFaydaSlipData(
     }
   }
 
-  // 3. Phone Number (+251... or 09... or 07...)
+  // 3. Serial Number (SN) - Extract purely the number without "SN :" or prefix
+  if (!result.serialNumber || result.serialNumber === SAMPLE_ID_DATA.serialNumber) {
+    const snMatch = rawText.match(/\b(?:SN|Serial\s*No|Serial\s*Number|Serial|ተከታታይ\s*ቁጥር)[\s:|\-/]+([A-Za-z0-9\-]+)\b/i) ||
+                    rawText.match(/\bSN\s*[:.\s]+([0-9]{4,12})\b/i);
+    if (snMatch && snMatch[1]) {
+      const cleanSn = snMatch[1].replace(/^(?:SN|Serial|No|ተከታታይ)[\s:|\-/]*/i, '').trim();
+      if (cleanSn) {
+        result.serialNumber = cleanSn;
+        detectedCount++;
+      }
+    } else {
+      // Check each line for SN label
+      for (const line of lines) {
+        const lineSn = line.match(/(?:(?:^|\s)(?:SN|Serial\s*(?:No|Number)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-/]+([A-Za-z0-9\-]+))/i);
+        if (lineSn && lineSn[1]) {
+          const cleanSn = lineSn[1].replace(/^(?:SN|Serial|No|ተከታታይ)[\s:|\-/]*/i, '').trim();
+          if (cleanSn) {
+            result.serialNumber = cleanSn;
+            detectedCount++;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Phone Number (+251... or 09... or 07...)
   const phoneMatch = rawText.match(/(?:\+251|0)[97]\d{8}/);
   if (phoneMatch) {
     let p = phoneMatch[0];
@@ -340,15 +423,15 @@ export function parseFaydaSlipData(
   }
 
   if (datesFound.length > 0) {
-    // Look specifically for DOB label
+    // Look specifically for DOB label (capturing both E.C. and G.C. dates)
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (/birth|dob|ትውልድ/i.test(line)) {
-        const found = line.match(/\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4}\b/);
-        if (found) {
-          result.dateOfBirth = found[0].replace(/[\-\.]/g, '/');
-          const eth = convertGcToEth(result.dateOfBirth);
-          if (eth) result.dateOfBirthEth = eth;
+        const combinedDobText = `${line} ${lines[i + 1] || ''}`;
+        const dual = parseDualDate(combinedDobText);
+        if (dual.gc || dual.eth) {
+          result.dateOfBirth = dual.gc || dual.eth;
+          result.dateOfBirthEth = dual.eth || convertGcToEth(result.dateOfBirth) || '';
           detectedCount++;
           break;
         }
@@ -356,20 +439,25 @@ export function parseFaydaSlipData(
     }
 
     if ((!result.dateOfBirth || result.dateOfBirth === SAMPLE_ID_DATA.dateOfBirth) && datesFound[0]) {
-      result.dateOfBirth = datesFound[0];
-      const eth = convertGcToEth(result.dateOfBirth);
-      if (eth) result.dateOfBirthEth = eth;
-      detectedCount++;
+      const dual = parseDualDate(datesFound[0], datesFound[1]);
+      if (dual.gc && dual.eth) {
+        result.dateOfBirth = dual.gc;
+        result.dateOfBirthEth = dual.eth;
+        detectedCount++;
+      } else {
+        result.dateOfBirth = formatGcyyyyMmDd(datesFound[0]) || datesFound[0];
+        result.dateOfBirthEth = convertGcToEth(datesFound[0]) || '';
+        detectedCount++;
+      }
     }
 
-    if (datesFound.length >= 2) {
-      result.dateOfIssue = datesFound[1];
-      detectedCount++;
-    }
-    if (datesFound.length >= 3) {
-      result.dateOfExpiry = datesFound[2];
-      detectedCount++;
-    }
+    // Issued Date & Expiry Date: User directive: "make the issued date always updated do not put the button"
+    const today = getTodayIssueDates();
+    result.dateOfIssue = today.issueDateGc;
+    result.dateOfIssueEth = today.issueDateEth;
+    result.dateOfExpiry = today.expiryDateGc;
+    result.dateOfExpiryEth = today.expiryDateEth;
+    detectedCount += 2;
   }
 
   // 5. Gender / ፆታ
@@ -646,6 +734,11 @@ export function parseFaydaSlipData(
     detectedCount++;
   }
 
+  if (result.fan && !result.backFan) {
+    result.backFan = result.fan;
+    result.backFanReadSource = 'slipText';
+  }
+
   // Final rigorous sanitization
   const sanitized = sanitizeIdCardData(result);
 
@@ -663,152 +756,333 @@ export function parseFaydaSlipData(
  * - Multi-page PDF summaries
  * - Rotated / photographed paper slips
  */
-export async function extractFromPdf(file: File): Promise<ExtractionResult> {
+export async function extractFromPdf(
+  file: File,
+  options?: PdfExtractionOptions
+): Promise<ExtractionResult> {
+  ensurePdfjsInitialized();
   const arrayBuffer = await file.arrayBuffer();
-  
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(arrayBuffer),
-    cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '4.10.38'}/cmaps/`,
-    cMapPacked: true,
-  });
+  options?.onProgress?.('Loading PDF document...', 10);
 
-  const pdf = await loadingTask.promise;
-  const numPages = pdf.numPages;
-  const allLines: string[] = [];
+  // If the uploaded file is actually an image (or misnamed as .pdf), seamlessly delegate to extractFromImage
+  const uint8 = new Uint8Array(arrayBuffer);
+  const isPdfHeader = uint8.length >= 4 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46; // "%PDF"
+  if (!isPdfHeader && (file.type.startsWith('image/') || /\.(jpe?g|png|webp|bmp|gif)$/i.test(file.name) || (uint8[0] === 0xFF && uint8[1] === 0xD8) || (uint8[0] === 0x89 && uint8[1] === 0x50))) {
+    console.info('File has image format or headers, processing via image extractor...');
+    return extractFromImage(file);
+  }
 
-  // Extract text across pages (up to 3 pages)
-  for (let i = 1; i <= Math.min(numPages, 3); i++) {
-    const page = await pdf.getPage(i);
-    const textContent = await page.getTextContent();
-    const rawItems: { str: string; x: number; y: number; width: number; height: number }[] = [];
-    
-    for (const item of textContent.items) {
-      if ('str' in item && item.str.trim()) {
-        const transform = item.transform;
-        rawItems.push({
-          str: item.str.trim(),
-          x: transform[4],
-          y: transform[5],
-          width: item.width || 0,
-          height: item.height || 0,
-        });
-      }
-    }
+  let pdf: any;
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data: uint8,
+      cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '6.3.289'}/cmaps/`,
+      cMapPacked: true,
+      standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version || '6.3.289'}/standard_fonts/`,
+      enableXfa: true,
+    });
 
-    // Group text items with adaptive Y-coordinate tolerance (7.5px) for horizontal line continuity
-    const sorted = [...rawItems].sort((a, b) => b.y - a.y || a.x - b.x);
-    let currentY = -9999;
-    let currentLine: string[] = [];
+    loadingTask.onPassword = (callback: (pwd: string) => void) => {
+      callback('');
+    };
 
-    for (const item of sorted) {
-      if (Math.abs(item.y - currentY) > 7.5) {
-        if (currentLine.length > 0) {
-          allLines.push(currentLine.join(' '));
-        }
-        currentLine = [item.str];
-        currentY = item.y;
-      } else {
-        currentLine.push(item.str);
-      }
-    }
-    if (currentLine.length > 0) {
-      allLines.push(currentLine.join(' '));
+    pdf = await loadingTask.promise;
+  } catch (pdfErr) {
+    console.warn('PDF.js failed to parse file directly as PDF, attempting image fallback:', pdfErr);
+    try {
+      return await extractFromImage(file);
+    } catch {
+      throw pdfErr;
     }
   }
 
-  const rawFullText = allLines.join('\n');
+  const numPages = pdf.numPages;
+  const allLines: string[] = [];
 
-  // Render Page 1 to Canvas (High Resolution for OCR, QR reading, and Photo extraction)
+  // High-DPI resolution scale: 2.5x for batch, 3.5x for maximum single card fidelity (300+ DPI razor sharp)
+  const targetScale = options?.scale ?? (options?.fastBatch ? 2.5 : 3.5);
   const page1 = await pdf.getPage(1);
-  const viewport = page1.getViewport({ scale: 2.8 });
+  const viewport = page1.getViewport({ scale: targetScale });
   const canvas = document.createElement('canvas');
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  if (ctx) {
-    // @ts-expect-error pdfjs canvas context
-    await page1.render({ canvasContext: ctx, viewport }).promise;
-  }
+  options?.onProgress?.('Rendering slip canvas & text...', 25);
 
-  const pageCanvasUrl = canvas.toDataURL('image/jpeg', 0.90);
-
-  // Capture precise bounding boxes of text items on Page 1 in viewport coordinates
+  // Safely render Page 1 to canvas and extract text content
   const textItems: PdfTextItemWithBox[] = [];
   try {
-    const page1TextContent = await page1.getTextContent();
-    for (const item of page1TextContent.items) {
-      if ('str' in item && item.str.trim()) {
-        const transform = item.transform;
-        const pt = viewport.convertToViewportPoint(transform[4], transform[5]);
-        const fontHeight = Math.max(12, Math.abs(transform[3] || transform[0] || 12) * viewport.scale * 0.9);
-        const itemWidth = Math.max(8, (item.width || 20) * viewport.scale);
-        const x = Math.max(0, pt[0]);
-        const y = Math.max(0, pt[1] - fontHeight);
-        const width = Math.min(canvas.width - x, itemWidth);
-        const height = fontHeight;
-
-        textItems.push({
-          str: item.str.trim(),
-          x,
-          y,
-          width,
-          height,
-          pctX: (x / canvas.width) * 100,
-          pctY: (y / canvas.height) * 100,
-          pctWidth: (width / canvas.width) * 100,
-          pctHeight: (height / canvas.height) * 100,
-        });
+    await page1.render({ canvas, viewport }).promise;
+  } catch (renderErr) {
+    console.warn('Direct canvas render warning, trying fallback with context:', renderErr);
+    if (ctx) {
+      try {
+        await page1.render({ canvasContext: ctx, canvas: null as any, viewport }).promise;
+      } catch (fallbackErr) {
+        console.warn('Canvas render fallback warning:', fallbackErr);
       }
     }
-  } catch (err) {
-    console.warn('Could not collect page1 text item boxes:', err);
   }
 
-  // Precision QR code detection and exact crop from the document canvas
-  let extractedQrUrl: string | undefined;
-  let qrDecodedText: string | undefined;
-  let qrLocation: { x: number; y: number; width: number; height: number } | undefined;
-
+  let page1TextContent = { items: [] as any[] };
   try {
-    const qrResult = cropExactQrCode(canvas);
-    if (qrResult.detected) {
-      extractedQrUrl = qrResult.qrUrl;
-      qrDecodedText = qrResult.qrText;
-      qrLocation = qrResult.boundingBox;
-    }
-  } catch (err) {
-    console.warn('Page 1 QR extraction failed:', err);
+    page1TextContent = await page1.getTextContent();
+  } catch (textErr) {
+    console.warn('Could not extract vector text from Page 1 (scanned slip?):', textErr);
   }
 
-  // Intelligent photo area detection & high-resolution crop from the slip
-  let extractedPhotoUrl: string | undefined;
-  let detectedPhotoBox: BoundingBox | undefined;
-  if (ctx) {
-    try {
-      detectedPhotoBox = detectPhotoRegion(canvas, qrLocation);
-      extractedPhotoUrl = cropPhotoFromCanvas(canvas, detectedPhotoBox, 480, 640);
-    } catch (e) {
-      console.warn('Smart photo detection fallback:', e);
-      detectedPhotoBox = getDefaultPhotoBox(canvas.width, canvas.height);
-      extractedPhotoUrl = cropPhotoFromCanvas(canvas, detectedPhotoBox, 480, 640);
+  // Single-pass processing: extract line strings and exact text bounding boxes for Page 1
+  const rawItems: { str: string; x: number; y: number; width: number; height: number }[] = [];
+  for (const item of page1TextContent.items) {
+    if ('str' in item && item.str.trim()) {
+      const transform = item.transform;
+      const str = item.str.trim();
+      rawItems.push({
+        str,
+        x: transform[4],
+        y: transform[5],
+        width: item.width || 0,
+        height: item.height || 0,
+      });
+
+      const pt = viewport.convertToViewportPoint(transform[4], transform[5]);
+      const fontHeight = Math.max(12, Math.abs(transform[3] || transform[0] || 12) * viewport.scale * 0.9);
+      const itemWidth = Math.max(8, (item.width || 20) * viewport.scale);
+      const x = Math.max(0, pt[0]);
+      const y = Math.max(0, pt[1] - fontHeight);
+      const width = Math.min(canvas.width - x, itemWidth);
+      const height = fontHeight;
+
+      textItems.push({
+        str,
+        x,
+        y,
+        width,
+        height,
+        pctX: (x / canvas.width) * 100,
+        pctY: (y / canvas.height) * 100,
+        pctWidth: (width / canvas.width) * 100,
+        pctHeight: (height / canvas.height) * 100,
+      });
     }
   }
 
-  // Multi-page fallback: If page 1 did not have a detectable QR code, search page 2 and 3
+  // Group Page 1 text items into horizontal lines
+  const sorted = [...rawItems].sort((a, b) => b.y - a.y || a.x - b.x);
+  let currentY = -9999;
+  let currentLine: string[] = [];
+  for (const item of sorted) {
+    if (Math.abs(item.y - currentY) > 7.5) {
+      if (currentLine.length > 0) {
+        allLines.push(currentLine.join(' '));
+      }
+      currentLine = [item.str];
+      currentY = item.y;
+    } else {
+      currentLine.push(item.str);
+    }
+  }
+  if (currentLine.length > 0) {
+    allLines.push(currentLine.join(' '));
+  }
+
+  // Concurrent extraction of text from remaining pages (if multi-page PDF up to page 3)
+  if (numPages > 1) {
+    const extraPagesCount = Math.min(numPages, 3) - 1;
+    const extraPages = await Promise.all(
+      Array.from({ length: extraPagesCount }, (_, idx) => pdf.getPage(idx + 2))
+    );
+    const extraTexts = await Promise.all(extraPages.map((p) => p.getTextContent()));
+    for (const extraContent of extraTexts) {
+      const extraRawItems: { str: string; x: number; y: number }[] = [];
+      for (const item of extraContent.items) {
+        if ('str' in item && item.str.trim()) {
+          extraRawItems.push({
+            str: item.str.trim(),
+            x: item.transform[4],
+            y: item.transform[5],
+          });
+        }
+      }
+      const extraSorted = [...extraRawItems].sort((a, b) => b.y - a.y || a.x - b.x);
+      let ey = -9999;
+      let eline: string[] = [];
+      for (const it of extraSorted) {
+        if (Math.abs(it.y - ey) > 7.5) {
+          if (eline.length > 0) allLines.push(eline.join(' '));
+          eline = [it.str];
+          ey = it.y;
+        } else {
+          eline.push(it.str);
+        }
+      }
+      if (eline.length > 0) allLines.push(eline.join(' '));
+    }
+  }
+
+  const rawFullText = allLines.join('\n');
+
+  // Automated orientation detection (Portrait vs Landscape) & canvas rotation before field extraction
+  const orientationDetection = detectSlipOrientationAndRotate(canvas, {
+    textItems,
+    pdfPageRotate: page1.rotate,
+  });
+  const effectiveCanvas = orientationDetection.canvas;
+  const effectiveTextItems = orientationDetection.rotatedTextItems || textItems;
+
+  // Use high-quality JPEG (0.94) for fast serialization and crystal-clear preview performance
+  const pageCanvasUrl = effectiveCanvas.toDataURL('image/jpeg', 0.94);
+
+  // CONCURRENT EXTRACTION: Run QR detection, Photo detection, 1D Barcode crop, and Back FAN cut simultaneously
+  const [qrRes, photoRes, barcodeRes, finRes] = await Promise.all([
+    // 1. Precision QR code detection and crop
+    (async () => {
+      try {
+        const res = cropExactQrCode(effectiveCanvas);
+        return res.detected ? res : undefined;
+      } catch (err) {
+        console.warn('Page 1 QR extraction failed:', err);
+        return undefined;
+      }
+    })(),
+
+    // 2. Automated color thresholding photo area detection & crop
+    (async () => {
+      if (!ctx) return undefined;
+      try {
+        // Priority: Take photo position from the PDF slip extractor's calibrated / marked regions
+        const effectiveRegs = getEffectiveRegions();
+        const photoReg = effectiveRegs.find((r) => r.id === 'photo');
+        let slipPhotoBox: BoundingBox | undefined;
+        if (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0) {
+          slipPhotoBox = {
+            x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
+            y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
+            width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
+            height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
+          };
+        }
+
+        const searchZone = slipPhotoBox || detectPhotoRegion(effectiveCanvas);
+        const thresholdResult = await autoCropPortraitFromCanvas(effectiveCanvas, {
+          searchZone,
+          targetWidth: 960,
+          targetHeight: 1280,
+          applyBackgroundRemoval: false,
+          autoEnhance: true,
+        });
+        return {
+          photoUrl: thresholdResult.rawCroppedUrl,
+          boundingBox: thresholdResult.boundingBox || searchZone,
+        };
+      } catch (e) {
+        console.warn('Color thresholding photo detection fallback:', e);
+        try {
+          const effectiveRegs = getEffectiveRegions();
+          const photoReg = effectiveRegs.find((r) => r.id === 'photo');
+          const box: BoundingBox = (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0)
+            ? {
+                x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
+                y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
+                width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
+                height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
+              }
+            : detectPhotoRegion(effectiveCanvas);
+          return {
+            photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+            boundingBox: box,
+          };
+        } catch {
+          const box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
+          return {
+            photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+            boundingBox: box,
+          };
+        }
+      }
+    })(),
+
+    // 3. Exact 1D Barcode Strip direct crop from raw slip canvas (authentic cut, no synthetic regeneration)
+    (async () => {
+      try {
+        const effectiveRegs = getEffectiveRegions();
+        const barcodeReg = effectiveRegs.find((r) => r.id === 'barcode' || r.type === 'barcode');
+        const rawBarcodeBox = (barcodeReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0)
+          ? {
+              x: Math.round((barcodeReg.x / 100) * effectiveCanvas.width),
+              y: Math.round((barcodeReg.y / 100) * effectiveCanvas.height),
+              width: Math.round((barcodeReg.width / 100) * effectiveCanvas.width),
+              height: Math.round((barcodeReg.height / 100) * effectiveCanvas.height),
+            }
+          : detectBarcodeRegionOnSlip(effectiveCanvas, effectiveTextItems);
+
+        if (rawBarcodeBox) {
+          const bcRes = await cropExactBarcode(effectiveCanvas, rawBarcodeBox, effectiveTextItems);
+          return {
+            barcodeUrl: bcRes.barcodeUrl,
+            barcodeText: bcRes.barcodeText,
+            detectedBarcodeBox: rawBarcodeBox,
+          };
+        }
+      } catch (err) {
+        console.warn('Barcode exact crop on PDF error:', err);
+      }
+      return undefined;
+    })(),
+
+    // 4. Back FAN / FIN cut layer direct crop from raw canvas (300-600 DPI, lossless PNG, zero compression loss)
+    (async () => {
+      try {
+        const effectiveRegs = getEffectiveRegions();
+        const finReg = effectiveRegs.find((r) => r.id === 'finCut' || r.id === 'backFanCut') || {
+          x: 29.5,
+          y: 24.0,
+          width: 43.0,
+          height: 4.5,
+        };
+        const cropUrl = await cropHighQualityFanLayer(effectiveCanvas, finReg, {
+          colorMode: 'original',
+          superSampleFactor: 1.0,
+          targetMinHeight: 0,
+          sharpen: false,
+          smoothText: false,
+          denoise: false,
+          noUpscale: true,
+        });
+        return cropUrl || undefined;
+      } catch (err) {
+        console.warn('Back FAN direct crop on PDF error:', err);
+        return undefined;
+      }
+    })(),
+  ]);
+
+  let extractedQrUrl = qrRes?.qrUrl;
+  let qrDecodedText = qrRes?.qrText;
+  let qrLocation = qrRes?.boundingBox;
+
+  let extractedPhotoUrl = photoRes?.photoUrl;
+  let detectedPhotoBox = photoRes?.boundingBox;
+
+  let extractedBarcodeUrl = barcodeRes?.barcodeUrl;
+  let detectedBarcodeBox = barcodeRes?.detectedBarcodeBox;
+  let barcodeDecodedText = barcodeRes?.barcodeText;
+  let extractedFinUrl = finRes;
+
+  // Multi-page fallback: Only in the rare event Page 1 had no detectable QR code and no photo
   if ((!extractedQrUrl || !extractedPhotoUrl) && numPages > 1) {
     for (let p = 2; p <= Math.min(numPages, 3); p++) {
       try {
         const nextPage = await pdf.getPage(p);
-        const nextVp = nextPage.getViewport({ scale: 2.8 });
+        const nextVp = nextPage.getViewport({ scale: 2.0 });
         const nextCanvas = document.createElement('canvas');
         nextCanvas.width = nextVp.width;
         nextCanvas.height = nextVp.height;
         const nextCtx = nextCanvas.getContext('2d', { willReadFrequently: true });
         
         if (nextCtx) {
-          // @ts-expect-error pdfjs canvas context
-          await nextPage.render({ canvasContext: nextCtx, viewport: nextVp }).promise;
+          await nextPage.render({ canvasContext: nextCtx as any, viewport: nextVp }).promise;
 
           if (!extractedQrUrl) {
             const nextQr = cropExactQrCode(nextCanvas);
@@ -836,7 +1110,7 @@ export async function extractFromPdf(file: File): Promise<ExtractionResult> {
     }
   }
 
-  // Secondary QR decoding attempt: If we cropped a QR code image but jsQR full-page didn't read its string,
+  // Secondary QR decoding attempt: If we cropped a QR code image but jsQR didn't read its string,
   // decode directly on the cropped QR canvas with contrast enhancement
   if (extractedQrUrl && !qrDecodedText) {
     try {
@@ -865,11 +1139,25 @@ export async function extractFromPdf(file: File): Promise<ExtractionResult> {
     }
   }
 
-  // Parse Fayda slip text and cryptographic payload
-  const parsedData = parseFaydaSlipData(rawFullText, allLines, qrDecodedText);
+  // PARALLEL: Parse Fayda slip text while photo background removal runs concurrently
+  const bgRemovalPromise = extractedPhotoUrl
+    ? autoRemovePhotoBackground(extractedPhotoUrl).catch((e) => {
+        console.warn('Auto background cutout fallback for slip:', e);
+        return extractedPhotoUrl;
+      })
+    : Promise.resolve(undefined);
 
-  if (extractedPhotoUrl) {
-    parsedData.data.photoUrl = extractedPhotoUrl;
+  const parsedData = parseFaydaSlipData(rawFullText, allLines, qrDecodedText);
+  const cutoutUrl = await bgRemovalPromise;
+
+  const finalPhotoUrl = cutoutUrl || extractedPhotoUrl;
+  if (finalPhotoUrl) {
+    parsedData.data.photoUrl = finalPhotoUrl;
+    parsedData.data.secondaryPhotoUrl = finalPhotoUrl;
+    extractedPhotoUrl = finalPhotoUrl;
+  }
+  if (detectedPhotoBox) {
+    parsedData.data.detectedPhotoBox = detectedPhotoBox;
   }
   if (qrDecodedText) {
     parsedData.data.qrData = qrDecodedText;
@@ -880,21 +1168,69 @@ export async function extractFromPdf(file: File): Promise<ExtractionResult> {
   if (qrLocation) {
     parsedData.data.detectedQrBox = qrLocation;
   }
+  if (extractedBarcodeUrl) {
+    parsedData.data.barcodeImageUrl = extractedBarcodeUrl;
+  }
+  if (barcodeDecodedText) {
+    parsedData.data.barcodeData = barcodeDecodedText;
+  }
+  if (detectedBarcodeBox) {
+    parsedData.data.detectedBarcodeBox = detectedBarcodeBox;
+  }
   if (pageCanvasUrl) {
     parsedData.data.documentScanUrl = pageCanvasUrl;
   }
+  if (extractedFinUrl) {
+    parsedData.data.finLayerCropUrl = extractedFinUrl;
+    parsedData.data.useFinLayerCrop = true;
+  }
+
+  // User directive: "do not regenerate the barcode..... just put the exact cutted"
+  // If no barcode image was extracted yet, cut the exact region directly from effectiveCanvas
+  if (!parsedData.data.barcodeImageUrl && effectiveCanvas) {
+    try {
+      const effectiveRegs = getEffectiveRegions();
+      const barcodeReg = effectiveRegs.find((r) => r.id === 'barcode' || r.type === 'barcode') || {
+        x: 29.5,
+        y: 66.0,
+        width: 38.0,
+        height: 6.5,
+      };
+      const box = {
+        x: Math.round((barcodeReg.x / 100) * effectiveCanvas.width),
+        y: Math.round((barcodeReg.y / 100) * effectiveCanvas.height),
+        width: Math.round((barcodeReg.width / 100) * effectiveCanvas.width),
+        height: Math.round((barcodeReg.height / 100) * effectiveCanvas.height),
+      };
+      const exactCut = await cropExactBarcode(effectiveCanvas, box, effectiveTextItems);
+      if (exactCut.barcodeUrl) {
+        parsedData.data.barcodeImageUrl = exactCut.barcodeUrl;
+        if (exactCut.barcodeText && !parsedData.data.barcodeData) {
+          parsedData.data.barcodeData = exactCut.barcodeText;
+        }
+      }
+    } catch (e) {
+      console.warn('Fallback exact barcode crop error:', e);
+    }
+  }
+  parsedData.data.barcodeRenderMode = 'extracted';
 
   return {
     data: parsedData.data,
     pageCanvasUrl,
+    pageCanvas: effectiveCanvas,
     extractedPhotoUrl,
     extractedQrUrl,
+    extractedBarcodeUrl,
+    extractedFinUrl,
     rawText: rawFullText,
     detectedFieldsCount: parsedData.fieldCount,
     detectedPhotoBox,
     detectedQrBox: qrLocation,
-    textItems,
-    canvasDimensions: { width: canvas.width, height: canvas.height },
+    detectedBarcodeBox,
+    textItems: effectiveTextItems,
+    canvasDimensions: { width: effectiveCanvas.width, height: effectiveCanvas.height },
+    orientationInfo: orientationDetection.result,
   };
 }
 
@@ -906,51 +1242,186 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
     const reader = new FileReader();
     reader.onload = async (e) => {
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
+        const origW = img.naturalWidth || img.width;
+        const origH = img.naturalHeight || img.height;
+        // Cap excessive image dimensions to 1800px max for super-fast processing with full fidelity
+        const maxDim = 1800;
+        const scale = Math.min(1, maxDim / Math.max(origW, origH));
+        const finalW = Math.round(origW * scale);
+        const finalH = Math.round(origH * scale);
+
         const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth || img.width;
-        canvas.height = img.naturalHeight || img.height;
+        canvas.width = finalW;
+        canvas.height = finalH;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
-          ctx.drawImage(img, 0, 0);
+          ctx.drawImage(img, 0, 0, finalW, finalH);
         }
 
-        const pageCanvasUrl = canvas.toDataURL('image/jpeg', 0.90);
+        // Automated orientation detection (Portrait vs Landscape) & canvas rotation before field extraction
+        const orientationDetection = detectSlipOrientationAndRotate(canvas);
+        const effectiveCanvas = orientationDetection.canvas;
 
-        // Precision QR code detection and exact crop from image
-        let extractedQrUrl: string | undefined;
-        let qrDecodedText: string | undefined;
-        let qrLocation: { x: number; y: number; width: number; height: number } | undefined;
+        // Store high-quality canvas image for preview and region extraction
+        const pageCanvasUrl = effectiveCanvas.toDataURL('image/jpeg', 0.94);
 
-        try {
-          const qrResult = cropExactQrCode(canvas);
-          if (qrResult.detected) {
-            extractedQrUrl = qrResult.qrUrl;
-            qrDecodedText = qrResult.qrText;
-            qrLocation = qrResult.boundingBox;
-          }
-        } catch (err) {
-          console.warn('QR scan on image failed', err);
-        }
+        // CONCURRENT EXTRACTION: Run QR detection, Photo detection, 1D Barcode crop, and Back FAN cut simultaneously
+        const [qrResult, photoResult, barcodeResult, finResult] = await Promise.all([
+          // 1. QR code detection and crop
+          (async () => {
+            try {
+              const res = cropExactQrCode(effectiveCanvas);
+              return res.detected ? res : undefined;
+            } catch (err) {
+              console.warn('QR scan on image failed', err);
+              return undefined;
+            }
+          })(),
 
-        // Intelligent photo detection & high-resolution crop from uploaded image
-        let extractedPhotoUrl: string | undefined;
-        let detectedPhotoBox: BoundingBox | undefined;
-        if (ctx) {
-          try {
-            detectedPhotoBox = detectPhotoRegion(canvas, qrLocation);
-            extractedPhotoUrl = cropPhotoFromCanvas(canvas, detectedPhotoBox, 480, 640);
-          } catch (err) {
-            console.warn('Smart photo detection fallback on image:', err);
-            detectedPhotoBox = getDefaultPhotoBox(canvas.width, canvas.height);
-            extractedPhotoUrl = cropPhotoFromCanvas(canvas, detectedPhotoBox, 480, 640);
-          }
-        }
+          // 2. Color thresholding photo detection & crop
+          (async () => {
+            if (!ctx) return undefined;
+            try {
+              // Priority: Take photo position from the PDF slip extractor's calibrated / marked regions
+              const effectiveRegs = getEffectiveRegions();
+              const photoReg = effectiveRegs.find((r) => r.id === 'photo');
+              let slipPhotoBox: BoundingBox | undefined;
+              if (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0) {
+                slipPhotoBox = {
+                  x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
+                  y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
+                  width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
+                  height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
+                };
+              }
+
+              const searchZone = slipPhotoBox || detectPhotoRegion(effectiveCanvas);
+              const thresholdResult = await autoCropPortraitFromCanvas(effectiveCanvas, {
+                searchZone,
+                targetWidth: 960,
+                targetHeight: 1280,
+                applyBackgroundRemoval: false,
+                autoEnhance: true,
+              });
+              return {
+                photoUrl: thresholdResult.rawCroppedUrl,
+                boundingBox: thresholdResult.boundingBox || searchZone,
+              };
+            } catch (err) {
+              console.warn('Color thresholding photo detection fallback on image:', err);
+              try {
+                const effectiveRegs = getEffectiveRegions();
+                const photoReg = effectiveRegs.find((r) => r.id === 'photo');
+                const box: BoundingBox = (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0)
+                  ? {
+                      x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
+                      y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
+                      width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
+                      height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
+                    }
+                  : detectPhotoRegion(effectiveCanvas);
+                return {
+                  photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+                  boundingBox: box,
+                };
+              } catch {
+                const box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
+                return {
+                  photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+                  boundingBox: box,
+                };
+              }
+            }
+          })(),
+
+          // 3. Exact 1D Barcode Strip direct crop from raw canvas (authentic cut, no synthetic regeneration)
+          (async () => {
+            if (!ctx) return undefined;
+            try {
+              const effectiveRegs = getEffectiveRegions();
+              const barcodeReg = effectiveRegs.find((r) => r.id === 'barcode' || r.type === 'barcode');
+              const rawBcBox = (barcodeReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0)
+                ? {
+                    x: Math.round((barcodeReg.x / 100) * effectiveCanvas.width),
+                    y: Math.round((barcodeReg.y / 100) * effectiveCanvas.height),
+                    width: Math.round((barcodeReg.width / 100) * effectiveCanvas.width),
+                    height: Math.round((barcodeReg.height / 100) * effectiveCanvas.height),
+                  }
+                : detectBarcodeRegionOnSlip(effectiveCanvas);
+
+              if (rawBcBox) {
+                const bcRes = await cropExactBarcode(effectiveCanvas, rawBcBox);
+                return {
+                  barcodeUrl: bcRes.barcodeUrl,
+                  barcodeText: bcRes.barcodeText,
+                  detectedBarcodeBox: rawBcBox,
+                };
+              }
+            } catch (err) {
+              console.warn('Barcode exact crop on image error:', err);
+            }
+            return undefined;
+          })(),
+
+          // 4. Back FAN / FIN cut layer direct crop from raw canvas (300-600 DPI, lossless)
+          (async () => {
+            if (!ctx) return undefined;
+            try {
+              const effectiveRegs = getEffectiveRegions();
+              const finReg = effectiveRegs.find((r) => r.id === 'finCut' || r.id === 'backFanCut') || {
+                x: 29.5,
+                y: 24.0,
+                width: 43.0,
+                height: 4.5,
+              };
+              const cropUrl = await cropHighQualityFanLayer(effectiveCanvas, finReg, {
+                colorMode: 'enhanced',
+                superSampleFactor: 2.5,
+                targetMinHeight: 180,
+                sharpen: true,
+                smoothText: true,
+                denoise: true,
+              });
+              return cropUrl || undefined;
+            } catch (err) {
+              console.warn('Back FAN auto-crop on image error:', err);
+              return undefined;
+            }
+          })(),
+        ]);
+
+        const extractedQrUrl = qrResult?.qrUrl;
+        const qrDecodedText = qrResult?.qrText;
+        const qrLocation = qrResult?.boundingBox;
+
+        let extractedPhotoUrl = photoResult?.photoUrl;
+        const detectedPhotoBox = photoResult?.boundingBox;
+
+        const extractedBarcodeUrl = barcodeResult?.barcodeUrl;
+        const detectedBarcodeBox = barcodeResult?.detectedBarcodeBox;
+        const barcodeDecodedText = barcodeResult?.barcodeText;
+        const extractedFinUrl = finResult;
+
+        // Concurrent background cutout and metadata parsing
+        const bgRemovalPromise = extractedPhotoUrl
+          ? autoRemovePhotoBackground(extractedPhotoUrl).catch((e) => {
+              console.warn('Auto cutout on image fallback:', e);
+              return extractedPhotoUrl;
+            })
+          : Promise.resolve(undefined);
 
         const parsed = parseFaydaSlipData(qrDecodedText || '', [], qrDecodedText);
+        const cutoutUrl = await bgRemovalPromise;
 
-        if (extractedPhotoUrl) {
-          parsed.data.photoUrl = extractedPhotoUrl;
+        const finalPhotoUrl = cutoutUrl || extractedPhotoUrl;
+        if (finalPhotoUrl) {
+          parsed.data.photoUrl = finalPhotoUrl;
+          parsed.data.secondaryPhotoUrl = finalPhotoUrl;
+          extractedPhotoUrl = finalPhotoUrl;
+        }
+        if (detectedPhotoBox) {
+          parsed.data.detectedPhotoBox = detectedPhotoBox;
         }
         if (qrDecodedText) {
           parsed.data.qrData = qrDecodedText;
@@ -961,21 +1432,67 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
         if (qrLocation) {
           parsed.data.detectedQrBox = qrLocation;
         }
+        if (extractedBarcodeUrl) {
+          parsed.data.barcodeImageUrl = extractedBarcodeUrl;
+        }
+        if (barcodeDecodedText) {
+          parsed.data.barcodeData = barcodeDecodedText;
+        }
+        if (detectedBarcodeBox) {
+          parsed.data.detectedBarcodeBox = detectedBarcodeBox;
+        }
         if (pageCanvasUrl) {
           parsed.data.documentScanUrl = pageCanvasUrl;
         }
+        if (extractedFinUrl) {
+          parsed.data.finLayerCropUrl = extractedFinUrl;
+          parsed.data.useFinLayerCrop = true;
+        }
+
+        // User directive: "do not regenerate the barcode..... just put the exact cutted"
+        if (!parsed.data.barcodeImageUrl && effectiveCanvas) {
+          try {
+            const effectiveRegs = getEffectiveRegions();
+            const barcodeReg = effectiveRegs.find((r) => r.id === 'barcode' || r.type === 'barcode') || {
+              x: 29.5,
+              y: 66.0,
+              width: 38.0,
+              height: 6.5,
+            };
+            const box = {
+              x: Math.round((barcodeReg.x / 100) * effectiveCanvas.width),
+              y: Math.round((barcodeReg.y / 100) * effectiveCanvas.height),
+              width: Math.round((barcodeReg.width / 100) * effectiveCanvas.width),
+              height: Math.round((barcodeReg.height / 100) * effectiveCanvas.height),
+            };
+            const exactCut = await cropExactBarcode(effectiveCanvas, box);
+            if (exactCut.barcodeUrl) {
+              parsed.data.barcodeImageUrl = exactCut.barcodeUrl;
+              if (exactCut.barcodeText && !parsed.data.barcodeData) {
+                parsed.data.barcodeData = exactCut.barcodeText;
+              }
+            }
+          } catch (e) {
+            console.warn('Fallback exact barcode crop error:', e);
+          }
+        }
+        parsed.data.barcodeRenderMode = 'extracted';
 
         resolve({
           data: parsed.data,
           pageCanvasUrl,
           extractedPhotoUrl,
           extractedQrUrl,
+          extractedBarcodeUrl,
+          extractedFinUrl,
           rawText: qrDecodedText || 'Image uploaded',
           detectedFieldsCount: parsed.fieldCount,
           detectedPhotoBox,
           detectedQrBox: qrLocation,
+          detectedBarcodeBox,
           textItems: [],
-          canvasDimensions: { width: canvas.width, height: canvas.height },
+          canvasDimensions: { width: effectiveCanvas.width, height: effectiveCanvas.height },
+          orientationInfo: orientationDetection.result,
         });
       };
       img.src = e.target?.result as string;

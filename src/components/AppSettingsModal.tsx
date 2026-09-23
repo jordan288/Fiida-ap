@@ -45,7 +45,7 @@ export function saveAppSettingsToStorage(settings: AppSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch (e) {
-    console.error('Failed to save app settings to localStorage:', e);
+    console.warn('Failed to save app settings to localStorage:', e);
   }
 }
 
@@ -307,7 +307,7 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                 <span>Include Official Ethiopian Header Banner</span>
                 <input
                   type="checkbox"
-                  checked={localSettings.includeMetadataHeader}
+                  checked={Boolean(localSettings.includeMetadataHeader)}
                   onChange={(e) =>
                     setLocalSettings((prev) => ({
                       ...prev,
@@ -322,7 +322,7 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
                 <span>Include Precision Corner Crop Marks (Cutting Guides)</span>
                 <input
                   type="checkbox"
-                  checked={localSettings.includeCropMarks}
+                  checked={Boolean(localSettings.includeCropMarks)}
                   onChange={(e) =>
                     setLocalSettings((prev) => ({
                       ...prev,

@@ -15,16 +15,25 @@ import {
   Layers,
   Sparkles,
   Info,
-  Loader2
+  Loader2,
+  Ruler,
+  Image as ImageIcon,
+  AlertCircle,
+  Plus,
+  Minus,
+  RotateCcw,
 } from 'lucide-react';
 import {
   A4BatchPrintConfig,
   A4BatchPrintLayout,
+  A4CardSizePreset,
+  A4_CARD_SIZE_PRESETS,
   BatchQueueItem,
   CoordinatesConfig,
-  TemplateConfig
+  TemplateConfig,
+  NumberedTemplate
 } from '../types';
-import { exportBatchToA4Pdf, renderBatchA4SheetCanvas } from '../utils/batchExporter';
+import { exportBatchToA4Pdf, exportBatchToA4Png, renderBatchA4SheetCanvas } from '../utils/batchExporter';
 
 interface A4BatchPrintModalProps {
   isOpen: boolean;
@@ -32,6 +41,12 @@ interface A4BatchPrintModalProps {
   items: BatchQueueItem[];
   config: CoordinatesConfig;
   templateConfig: TemplateConfig;
+  numberedTemplates?: NumberedTemplate[];
+  activeTemplateNumber?: number;
+  initialPhotoColorMode?: 'color' | 'grayscale';
+  onApplyStudioPositionsToAllTemplates?: () => void;
+  onOpenPositionEditor?: () => void;
+  onMarkPrinted?: (itemIds: string[]) => void;
 }
 
 export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
@@ -40,19 +55,103 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
   items,
   config,
   templateConfig,
+  numberedTemplates,
+  activeTemplateNumber,
+  initialPhotoColorMode = 'color',
+  onApplyStudioPositionsToAllTemplates,
+  onOpenPositionEditor,
+  onMarkPrinted,
 }) => {
-  const activeItems = items.filter((it) => it.selected !== false && it.status === 'ready');
-  const chunkSize = 5;
-  const totalSheets = Math.ceil(activeItems.length / chunkSize) || 1;
+  const activeItems = items.filter((it) => it.selected !== false && (it.status === 'ready' || it.status === 'printed'));
 
   // Print Configuration State
   const [layout, setLayout] = useState<A4BatchPrintLayout>('5_per_page_paired');
   const [showCropMarks, setShowCropMarks] = useState(true);
   const [showCutLines, setShowCutLines] = useState(true);
-  const [showLabels, setShowLabels] = useState(true);
-  const [cardGapY, setCardGapY] = useState<number>(2.0); // mm between rows
-  const [cardGapX, setCardGapX] = useState<number>(6.0); // mm between columns
-  const [topMargin, setTopMargin] = useState<number>(9.5); // mm top margin
+  const [showLabels, setShowLabels] = useState(false);
+  const [mirrorPrint, setMirrorPrint] = useState(true);
+  const [cardGapY, setCardGapY] = useState<number>(1.8); // mm between rows (balanced for enlarged cards)
+  const [cardGapX, setCardGapX] = useState<number>(5.5); // mm between columns
+  const [topMargin, setTopMargin] = useState<number>(8.0); // mm top margin (centered on A4 page)
+  const [photoColorMode, setPhotoColorMode] = useState<'color' | 'grayscale'>(initialPhotoColorMode);
+  const [useStudioPositionsAlways, setUseStudioPositionsAlways] = useState(true);
+  const [syncToast, setSyncToast] = useState(false);
+
+  // Dynamic layout chunking
+  const chunkSize = layout === '1_per_page_detailed' ? 1 : 5;
+  const totalSheets =
+    layout === '5_per_page_duplex'
+      ? Math.max(1, Math.ceil(activeItems.length / 5) * 2)
+      : Math.max(1, Math.ceil(activeItems.length / chunkSize));
+
+  // Card printed dimensions (mm) - calibrated with slight oversize compensation to prevent undersized card prints
+  const [cardWidthMm, setCardWidthMm] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? parseFloat(localStorage.getItem('fayda_a4_card_width') || '') : NaN;
+    return !isNaN(saved) && saved >= 75 && saved <= 96 ? saved : 86.80;
+  });
+  const [cardHeightMm, setCardHeightMm] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? parseFloat(localStorage.getItem('fayda_a4_card_height') || '') : NaN;
+    return !isNaN(saved) && saved >= 45 && saved <= 65 ? saved : 54.75;
+  });
+  const [sizePreset, setSizePreset] = useState<A4CardSizePreset>(() => {
+    const saved = typeof window !== 'undefined' ? (localStorage.getItem('fayda_a4_card_size_preset') as A4CardSizePreset) : null;
+    return saved && A4_CARD_SIZE_PRESETS[saved] ? saved : 'oversized';
+  });
+
+  const applySizePreset = (preset: A4CardSizePreset) => {
+    setSizePreset(preset);
+    const info = A4_CARD_SIZE_PRESETS[preset];
+    if (info && preset !== 'custom') {
+      setCardWidthMm(info.widthMm);
+      setCardHeightMm(info.heightMm);
+      try {
+        localStorage.setItem('fayda_a4_card_width', info.widthMm.toString());
+        localStorage.setItem('fayda_a4_card_height', info.heightMm.toString());
+        localStorage.setItem('fayda_a4_card_size_preset', preset);
+      } catch (e) {}
+    }
+  };
+
+  const adjustWidthBy = (deltaMm: number) => {
+    setSizePreset('custom');
+    const newW = Number(Math.max(78, Math.min(96, cardWidthMm + deltaMm)).toFixed(2));
+    const newH = Number(((newW / 1012) * 638).toFixed(2));
+    setCardWidthMm(newW);
+    setCardHeightMm(newH);
+    try {
+      localStorage.setItem('fayda_a4_card_width', newW.toString());
+      localStorage.setItem('fayda_a4_card_height', newH.toString());
+      localStorage.setItem('fayda_a4_card_size_preset', 'custom');
+    } catch (e) {}
+  };
+
+  const handleManualWidth = (val: number) => {
+    setCardWidthMm(val);
+    const newH = Number(((val / 1012) * 638).toFixed(2));
+    setCardHeightMm(newH);
+    setSizePreset('custom');
+    try {
+      localStorage.setItem('fayda_a4_card_width', val.toString());
+      localStorage.setItem('fayda_a4_card_height', newH.toString());
+      localStorage.setItem('fayda_a4_card_size_preset', 'custom');
+    } catch (e) {}
+  };
+
+  const handleManualHeight = (val: number) => {
+    setCardHeightMm(val);
+    setSizePreset('custom');
+    try {
+      localStorage.setItem('fayda_a4_card_height', val.toString());
+      localStorage.setItem('fayda_a4_card_size_preset', 'custom');
+    } catch (e) {}
+  };
+
+  // Synchronize initialPhotoColorMode when modal opens or prop changes
+  useEffect(() => {
+    if (initialPhotoColorMode) {
+      setPhotoColorMode(initialPhotoColorMode);
+    }
+  }, [initialPhotoColorMode, isOpen]);
 
   // View state
   const [currentSheetIndex, setCurrentSheetIndex] = useState(0);
@@ -62,7 +161,15 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
   const [allPrintSheets, setAllPrintSheets] = useState<string[]>([]);
   const [isPreparingPrint, setIsPreparingPrint] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportingPng, setIsExportingPng] = useState(false);
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; status: string } | null>(null);
+
+  // Clamp currentSheetIndex if layout changes totalSheets
+  useEffect(() => {
+    if (currentSheetIndex >= totalSheets) {
+      setCurrentSheetIndex(Math.max(0, totalSheets - 1));
+    }
+  }, [totalSheets, currentSheetIndex]);
 
   const printConfig: A4BatchPrintConfig = {
     layout,
@@ -72,6 +179,13 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
     cardGapY,
     cardGapX,
     topMargin,
+    mirrorPrint,
+    photoColorMode,
+    numberedTemplates,
+    activeTemplateNumber,
+    useStudioPositionsAlways,
+    cardWidthMm,
+    cardHeightMm,
   };
 
   // Render current sheet preview whenever relevant settings change
@@ -82,15 +196,25 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
     const renderPreview = async () => {
       setIsRenderingPreview(true);
       try {
-        const startIdx = currentSheetIndex * chunkSize;
-        const currentChunk = activeItems.slice(startIdx, startIdx + chunkSize);
+        let currentChunk: BatchQueueItem[] = [];
+        let duplexSide: 'front' | 'back' | undefined;
+
+        if (layout === '1_per_page_detailed') {
+          currentChunk = activeItems.slice(currentSheetIndex, currentSheetIndex + 1);
+        } else if (layout === '5_per_page_duplex') {
+          const chunkIdx = Math.floor(currentSheetIndex / 2);
+          duplexSide = currentSheetIndex % 2 === 0 ? 'front' : 'back';
+          currentChunk = activeItems.slice(chunkIdx * 5, (chunkIdx + 1) * 5);
+        } else {
+          currentChunk = activeItems.slice(currentSheetIndex * 5, (currentSheetIndex + 1) * 5);
+        }
         
         // Render 150 DPI preview canvas for fast, crisp on-screen inspection
         const canvas = await renderBatchA4SheetCanvas(
           currentChunk,
           config,
           templateConfig,
-          printConfig,
+          { ...printConfig, duplexSide },
           currentSheetIndex,
           totalSheets,
           150
@@ -122,27 +246,43 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
     cardGapY,
     cardGapX,
     topMargin,
+    mirrorPrint,
+    photoColorMode,
+    useStudioPositionsAlways,
+    cardWidthMm,
+    cardHeightMm,
     activeItems.length,
   ]);
 
-  // Pre-render all sheets at high-res (200 DPI) for browser printing
+  // Pre-render all sheets at high-res (300 DPI) for browser printing
   const preparePrintSheets = async (): Promise<string[]> => {
     setIsPreparingPrint(true);
     const sheetUrls: string[] = [];
     try {
       for (let s = 0; s < totalSheets; s++) {
-        const startIdx = s * chunkSize;
-        const chunk = activeItems.slice(startIdx, startIdx + chunkSize);
+        let currentChunk: BatchQueueItem[] = [];
+        let duplexSide: 'front' | 'back' | undefined;
+
+        if (layout === '1_per_page_detailed') {
+          currentChunk = activeItems.slice(s, s + 1);
+        } else if (layout === '5_per_page_duplex') {
+          const chunkIdx = Math.floor(s / 2);
+          duplexSide = s % 2 === 0 ? 'front' : 'back';
+          currentChunk = activeItems.slice(chunkIdx * 5, (chunkIdx + 1) * 5);
+        } else {
+          currentChunk = activeItems.slice(s * 5, (s + 1) * 5);
+        }
+
         const canvas = await renderBatchA4SheetCanvas(
-          chunk,
+          currentChunk,
           config,
           templateConfig,
-          printConfig,
+          { ...printConfig, duplexSide },
           s,
           totalSheets,
-          200
+          300
         );
-        sheetUrls.push(canvas.toDataURL('image/png', 0.95));
+        sheetUrls.push(canvas.toDataURL('image/png', 1.0));
       }
       setAllPrintSheets(sheetUrls);
       return sheetUrls;
@@ -161,6 +301,8 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
       const sheets = await preparePrintSheets();
       if (sheets.length === 0) return;
 
+      onMarkPrinted?.(activeItems.map((it) => it.id));
+
       // Small delay to ensure the DOM has painted the printable images
       setTimeout(() => {
         window.print();
@@ -170,7 +312,7 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
     }
   };
 
-  // Trigger A4 PDF Export via jsPDF
+  // Trigger A4 PDF Export via jsPDF (Full Page 300 DPI PNG, solid white background)
   const handleExportPdf = async () => {
     if (activeItems.length === 0) return;
     try {
@@ -184,11 +326,37 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
           setExportProgress({ current, total, status });
         }
       );
+      onMarkPrinted?.(activeItems.map((it) => it.id));
     } catch (e) {
       console.error('PDF Export failed:', e);
       alert('Failed to generate A4 PDF. Check console.');
     } finally {
       setIsExportingPdf(false);
+      setExportProgress(null);
+    }
+  };
+
+  // Trigger A4 PNG Export (Full Page 300 DPI, solid white background)
+  const handleExportPng = async (singleSheet = false) => {
+    if (activeItems.length === 0) return;
+    try {
+      setIsExportingPng(true);
+      await exportBatchToA4Png(
+        activeItems,
+        config,
+        templateConfig,
+        printConfig,
+        (current, total, status) => {
+          setExportProgress({ current, total, status });
+        },
+        singleSheet ? currentSheetIndex : undefined
+      );
+      onMarkPrinted?.(activeItems.map((it) => it.id));
+    } catch (e) {
+      console.error('PNG Export failed:', e);
+      alert('Failed to export A4 PNG. Check console.');
+    } finally {
+      setIsExportingPng(false);
       setExportProgress(null);
     }
   };
@@ -217,7 +385,7 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Exact ISO CR80 (85.60 × 53.98 mm) • 5 Rows × 2 Columns Paired (Front & Back) • 300 DPI Calibration
+                Calibrated Card Size: {cardWidthMm.toFixed(1)} × {cardHeightMm.toFixed(1)} mm (Anti-Undersize) • 5 Rows × 2 Columns Paired • 300 DPI
               </p>
             </div>
           </div>
@@ -330,14 +498,45 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
               )}
             </div>
 
-            {/* Quick Calibration Bar */}
-            <div className="w-full max-w-xl mt-3 flex items-center justify-between text-[11px] text-slate-400 px-3">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                <span>Page size: A4 (210 × 297 mm)</span>
-              </span>
-              <span>1 Sheet = 5 Full IDs (10 Card Sides)</span>
-              <span>Trim size: 85.60 × 53.98 mm</span>
+            {/* Quick Calibration & Anti-Shrink Size Bar */}
+            <div className="w-full max-w-xl mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] bg-slate-900/90 border border-slate-800 rounded-xl px-3 py-2 text-slate-300 shadow-sm">
+              <div className="flex items-center gap-2">
+                <Ruler className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span className="font-semibold text-white">
+                  Card Size: <span className="font-mono text-amber-300 font-bold">{cardWidthMm.toFixed(1)} × {cardHeightMm.toFixed(1)} mm</span>
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                  {((cardWidthMm / 85.6) * 100).toFixed(0)}% CR80
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10.5px] text-amber-300/90 font-medium">Too small?</span>
+                <button
+                  type="button"
+                  onClick={() => adjustWidthBy(1.0)}
+                  className="px-2 py-0.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] flex items-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95"
+                  title="Add +1.0mm size to cards on A4 sheet"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>+ Add Small Size (+1mm)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => adjustWidthBy(2.0)}
+                  className="px-2 py-0.5 rounded-lg bg-amber-900/60 hover:bg-amber-800 text-amber-200 border border-amber-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                  title="Add +2.0mm size to cards"
+                >
+                  +2mm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => adjustWidthBy(-1.0)}
+                  className="px-1.5 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 hover:text-slate-200 text-[10px] transition-all cursor-pointer"
+                  title="Reduce -1.0mm"
+                >
+                  -1mm
+                </button>
+              </div>
             </div>
           </div>
 
@@ -438,7 +637,7 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
                   </div>
                   <input
                     type="checkbox"
-                    checked={showCropMarks}
+                    checked={Boolean(showCropMarks)}
                     onChange={(e) => setShowCropMarks(e.target.checked)}
                     className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                   />
@@ -451,7 +650,7 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
                   </div>
                   <input
                     type="checkbox"
-                    checked={showCutLines}
+                    checked={Boolean(showCutLines)}
                     onChange={(e) => setShowCutLines(e.target.checked)}
                     className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                   />
@@ -464,11 +663,322 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
                   </div>
                   <input
                     type="checkbox"
-                    checked={showLabels}
+                    checked={Boolean(showLabels)}
                     onChange={(e) => setShowLabels(e.target.checked)}
                     className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                   />
                 </label>
+
+                <label className="flex items-center justify-between p-2.5 rounded-xl bg-blue-950/30 border border-blue-800/50 cursor-pointer hover:bg-blue-900/40">
+                  <div className="text-xs">
+                    <span className="font-semibold text-white flex items-center gap-1.5">
+                      <span>Mirror Print (Inkjet PVC / Transfer Sheet)</span>
+                      <span className="px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 text-[9px] font-bold">PVC</span>
+                    </span>
+                    <span className="text-[10px] text-blue-200/70">Horizontally flips card output for transparent film transfer printing</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(mirrorPrint)}
+                    onChange={(e) => setMirrorPrint(e.target.checked)}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                </label>
+              </div>
+
+              {/* Photo Color Mode Option */}
+              <div className="pt-2 border-t border-slate-800 space-y-2">
+                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Batch Photos Color Mode</span>
+                  </span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                    photoColorMode === 'grayscale' ? 'bg-slate-700 text-slate-200' : 'bg-emerald-950 text-emerald-400 border border-emerald-500/40'
+                  }`}>
+                    {photoColorMode === 'grayscale' ? 'B&W (Grayscale)' : 'Full Color'}
+                  </span>
+                </label>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPhotoColorMode('color')}
+                    className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      photoColorMode === 'color'
+                        ? 'bg-emerald-950/60 border-emerald-500 text-white shadow-xs ring-1 ring-emerald-500/50'
+                        : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-tr from-amber-400 via-rose-500 to-cyan-400"></span>
+                    <span>Full Color</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPhotoColorMode('grayscale')}
+                    className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      photoColorMode === 'grayscale'
+                        ? 'bg-slate-800 border-emerald-500 text-white shadow-xs ring-1 ring-emerald-500/50'
+                        : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-slate-300 border border-slate-500"></span>
+                    <span>B&W (Grayscale)</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  {photoColorMode === 'grayscale' 
+                    ? 'All portraits in this print run will be converted to crisp high-contrast black & white.'
+                    : 'Prints all portraits in original vivid colors (or individual card overrides).'}
+                </p>
+              </div>
+
+              {/* Studio Coordinates & Positions Synchronization */}
+              <div className="pt-2 border-t border-slate-800 space-y-2.5">
+                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Studio Field Positions</span>
+                  </span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-950 text-emerald-400 border border-emerald-500/40">
+                    Auto-Applied
+                  </span>
+                </label>
+
+                <label className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-800/50 cursor-pointer hover:bg-emerald-900/40">
+                  <div className="text-xs">
+                    <span className="font-semibold text-white flex items-center gap-1.5">
+                      <span>Apply Studio Positions to All Templates & Batch</span>
+                      <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-bold">Auto</span>
+                    </span>
+                    <span className="text-[10px] text-emerald-200/70">Applies ID Card Studio field coordinates across all templates and batch cards</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(useStudioPositionsAlways)}
+                    onChange={(e) => setUseStudioPositionsAlways(e.target.checked)}
+                    className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0 ml-2"
+                  />
+                </label>
+
+                {onApplyStudioPositionsToAllTemplates && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onApplyStudioPositionsToAllTemplates();
+                      setSyncToast(true);
+                      setTimeout(() => setSyncToast(false), 3000);
+                    }}
+                    className="w-full py-2 px-3 rounded-xl border border-emerald-600/50 bg-emerald-900/40 hover:bg-emerald-900/70 text-emerald-300 text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{syncToast ? '✓ Positions Applied to All Templates!' : 'Sync Studio Positions to All Templates'}</span>
+                  </button>
+                )}
+
+                {onOpenPositionEditor && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenPositionEditor();
+                    }}
+                    className="w-full py-2 px-3 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    title="Fine-tune and calibrate card field positions for the batch"
+                  >
+                    <Sliders className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Open Batch Position Editor</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Printed ID Dimensions & Anti-Undersize Calibration */}
+              <div className="space-y-2.5 pt-2 border-t border-slate-800">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Ruler className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Card Print Size (የመታወቂያ መጠን)</span>
+                  </label>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-950/80 text-amber-300 border border-amber-500/40 font-mono">
+                    {cardWidthMm.toFixed(1)} × {cardHeightMm.toFixed(1)} mm
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Compensates for printer scaling and punch cutting so printed IDs fit standard PVC pouches perfectly.
+                </p>
+
+                {/* 7 Quick Presets */}
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+                  {(['small', 'standard', 'oversized', 'plus', 'large', 'max', 'xlarge'] as const).map((key) => {
+                    const info = A4_CARD_SIZE_PRESETS[key];
+                    const isSelected = sizePreset === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => applySizePreset(key)}
+                        className={`py-2 px-1.5 rounded-xl border text-[11px] font-bold text-center transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-950/60 border-amber-500 text-amber-200 shadow-xs ring-1 ring-amber-500/50'
+                            : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
+                        }`}
+                        title={info.description}
+                      >
+                        <div className="leading-tight truncate">{info.label}</div>
+                        <div className="text-[9px] opacity-75 font-normal font-mono">{info.tag}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Helper Banner for "It's so small / Printer Shrink" */}
+                <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 space-y-2.5">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="text-[11px] leading-relaxed">
+                      <span className="font-bold text-amber-200 block">Are printed IDs coming out too small? (መታወቂያው አነሰ?)</span>
+                      <span className="text-slate-300">
+                        Desktop printers often reduce A4 pages by 3–6% when "Fit to printable area" is enabled. Click below to add size and make cards fit standard PVC pouches:
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(1.0)}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] shadow-xs cursor-pointer transition-all active:scale-95 flex items-center gap-1"
+                      title="Add +1.0mm width & proportional height to fix small print size"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+ Add Small Size (+1.0 mm)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(2.0)}
+                      className="px-2.5 py-1.5 rounded-lg bg-amber-900/80 hover:bg-amber-800 text-amber-200 border border-amber-500/50 font-bold text-[10.5px] shadow-xs cursor-pointer transition-all active:scale-95 flex items-center gap-1"
+                      title="Add +2.0mm width & proportional height for medium printer shrinkage"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>+ Add (+2.0 mm)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applySizePreset('large')}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-semibold text-[10.5px] cursor-pointer transition-colors"
+                      title="Set to Large preset (88.6mm)"
+                    >
+                      Large (88.6mm)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applySizePreset('xlarge')}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-semibold text-[10.5px] cursor-pointer transition-colors"
+                      title="Set to XL preset (90.6mm)"
+                    >
+                      XL (90.6mm)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applySizePreset('standard')}
+                      className="px-2 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] cursor-pointer transition-colors flex items-center gap-1"
+                      title="Reset to 100% exact CR80 size (85.6mm)"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>CR80 (85.6mm)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick Nudge adjustments */}
+                <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                  <span className="text-[11px] text-slate-400 font-medium">Quick Step Nudge:</span>
+                  <div className="flex items-center gap-1 flex-wrap justify-end">
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(-1.0)}
+                      className="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-slate-300 transition-colors cursor-pointer"
+                      title="Shrink width and height proportionally by 1.0 mm"
+                    >
+                      -1.0mm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(-0.5)}
+                      className="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-slate-300 transition-colors cursor-pointer"
+                      title="Shrink width and height proportionally by 0.5 mm"
+                    >
+                      -0.5mm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(0.5)}
+                      className="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-amber-300 transition-colors cursor-pointer"
+                      title="Enlarge width and height proportionally by 0.5 mm"
+                    >
+                      +0.5mm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(1.0)}
+                      className="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-amber-300 transition-colors cursor-pointer"
+                      title="Enlarge width and height proportionally by 1.0 mm"
+                    >
+                      +1.0mm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(1.5)}
+                      className="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-amber-300 transition-colors cursor-pointer"
+                      title="Enlarge width and height proportionally by 1.5 mm"
+                    >
+                      +1.5mm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustWidthBy(2.0)}
+                      className="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-amber-300 transition-colors cursor-pointer"
+                      title="Enlarge width and height proportionally by 2.0 mm"
+                    >
+                      +2.0mm
+                    </button>
+                  </div>
+                </div>
+
+                {/* Precise Millimeter Inputs */}
+                <div className="grid grid-cols-2 gap-2 pt-0.5">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Card Width (mm)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="75"
+                      max="96"
+                      value={cardWidthMm}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 86.8;
+                        handleManualWidth(val);
+                      }}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Card Height (mm)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="45"
+                      max="65"
+                      value={cardHeightMm}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 54.75;
+                        handleManualHeight(val);
+                      }}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Spacing Adjustments */}
@@ -478,30 +988,48 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
                   <span>Card Spacing & Margins</span>
                 </label>
 
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-3 gap-2">
                   <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">Row Gap (mm)</label>
+                    <label className="text-[10px] text-slate-400 block mb-1">Row Gap (mm)</label>
                     <select
                       value={cardGapY}
                       onChange={(e) => setCardGapY(parseFloat(e.target.value))}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white outline-none focus:border-emerald-500"
                     >
                       <option value="1.0">1.0 mm (Tight)</option>
+                      <option value="1.5">1.5 mm</option>
+                      <option value="1.8">1.8 mm (Optimal)</option>
                       <option value="2.0">2.0 mm (Standard)</option>
-                      <option value="3.0">3.0 mm (Spaced)</option>
+                      <option value="2.5">2.5 mm</option>
+                      <option value="3.0">3.0 mm</option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">Column Gap (mm)</label>
+                    <label className="text-[10px] text-slate-400 block mb-1">Col Gap (mm)</label>
                     <select
                       value={cardGapX}
                       onChange={(e) => setCardGapX(parseFloat(e.target.value))}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-emerald-500"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white outline-none focus:border-emerald-500"
                     >
                       <option value="4.0">4.0 mm</option>
+                      <option value="5.5">5.5 mm (Optimal)</option>
                       <option value="6.0">6.0 mm (Standard)</option>
                       <option value="8.0">8.0 mm</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Top Margin</label>
+                    <select
+                      value={topMargin}
+                      onChange={(e) => setTopMargin(parseFloat(e.target.value))}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white outline-none focus:border-emerald-500"
+                    >
+                      <option value="6.0">6.0 mm</option>
+                      <option value="8.0">8.0 mm (Balanced)</option>
+                      <option value="9.5">9.5 mm (Standard)</option>
+                      <option value="12.0">12.0 mm</option>
                     </select>
                   </div>
                 </div>
@@ -528,7 +1056,7 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
               <button
                 type="button"
                 onClick={handlePrintNow}
-                disabled={isPreparingPrint || isExportingPdf}
+                disabled={isPreparingPrint || isExportingPdf || isExportingPng}
                 className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
               >
                 {isPreparingPrint ? (
@@ -547,21 +1075,56 @@ export const A4BatchPrintModal: React.FC<A4BatchPrintModalProps> = ({
               <button
                 type="button"
                 onClick={handleExportPdf}
-                disabled={isExportingPdf || isPreparingPrint}
+                disabled={isExportingPdf || isPreparingPrint || isExportingPng}
                 className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                title="Consolidated multi-page A4 PDF rendered with full-page 300 DPI lossless PNG and solid opaque white background"
               >
                 {isExportingPdf ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
-                    <span>Generating A4 PDF...</span>
+                    <span>Generating A4 PDF (Full Page PNG)...</span>
                   </>
                 ) : (
                   <>
                     <Download className="w-4 h-4 text-emerald-400" />
-                    <span>Download A4 PDF (5 IDs / Sheet)</span>
+                    <span>Download A4 PDF (Full-Page PNG • White Background)</span>
                   </>
                 )}
               </button>
+
+              {/* Direct A4 PNG Export (Full Page 300 DPI, Solid White Background) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleExportPng(true)}
+                  disabled={isExportingPng || isExportingPdf || isPreparingPrint}
+                  className="py-2 px-3 bg-slate-800 hover:bg-slate-700/90 border border-slate-700/80 text-slate-300 hover:text-white rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                  title="Download current A4 sheet as 300 DPI PNG image with solid white background"
+                >
+                  <ImageIcon className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Sheet {currentSheetIndex + 1} PNG</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleExportPng(false)}
+                  disabled={isExportingPng || isExportingPdf || isPreparingPrint}
+                  className="py-2 px-3 bg-slate-800 hover:bg-slate-700/90 border border-slate-700/80 text-slate-300 hover:text-white rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                  title="Download all A4 sheets as 300 DPI PNG images (solid white background)"
+                >
+                  {isExportingPng ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                      <span>Exporting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>All Sheets PNG {totalSheets > 1 ? `(${totalSheets})` : ''}</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

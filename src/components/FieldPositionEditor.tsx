@@ -37,23 +37,38 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
     fieldId === 'photoFrontSecondary' || 
     fieldId === 'frontBarcode' || 
     fieldId === 'qrCodeBack' || 
+    fieldId === 'backFanCut' ||
     Boolean(config.media[fieldId]);
+    
   const field: FieldCoordinate | undefined = config.fields[fieldId];
-  const media: MediaCoordinate | undefined = config.media[fieldId];
+  const media: MediaCoordinate | undefined = config.media[fieldId] || DEFAULT_COORDINATES.media[fieldId] || (
+    fieldId === 'frontBarcode'
+      ? { id: 'frontBarcode', label: 'Front 1D Barcode (ባርኮድ)', side: 'front', x: 485, y: 520, width: 440, height: 40, borderRadius: 4 }
+      : fieldId === 'backFanCut'
+      ? { id: 'backFanCut', label: 'Back FAN Cutter Layer (የተቆረጠ ጎን ሌየር)', side: 'back', x: 45, y: 505, width: 440, height: 95, borderRadius: 8 }
+      : fieldId === 'photoFrontSecondary'
+      ? { id: 'photoFrontSecondary', label: 'Smaller Photo (Photo 2 • አነስተኛ ፎቶ)', side: 'front', x: 825, y: 435, width: 145, height: 175, borderRadius: 0 }
+      : fieldId === 'qrCodeBack'
+      ? { id: 'qrCodeBack', label: 'Digital Biometric QR Matrix', side: 'back', x: 465, y: 60, width: 470, height: 470, borderRadius: 8 }
+      : undefined
+  );
 
   if (!field && !media) return null;
 
-  const currentX = isMedia ? media!.x : field!.x;
-  const currentY = isMedia ? media!.y : field!.y;
+  const currentX = isMedia ? (media?.x ?? 0) : field!.x;
+  const currentY = isMedia ? (media?.y ?? 0) : field!.y;
   const currentFontSize = field?.fontSize || 20;
   const currentColor = field?.color || '#111827';
-  const currentWidth = media?.width || field?.maxWidth || 300;
-  const currentHeight = media?.height || 200;
-  const currentRadius = media?.borderRadius || 14;
+  const currentWidth = media?.width || (fieldId === 'frontBarcode' ? 440 : fieldId === 'backFanCut' ? 440 : fieldId === 'qrCodeBack' ? 470 : fieldId === 'photoFrontSecondary' ? 145 : field?.maxWidth || 300);
+  const currentHeight = media?.height || (fieldId === 'frontBarcode' ? 40 : fieldId === 'backFanCut' ? 95 : fieldId === 'qrCodeBack' ? 470 : fieldId === 'photoFrontSecondary' ? 175 : 200);
+  const currentRadius = media?.borderRadius !== undefined ? media.borderRadius : 0;
   const currentOpacity = media?.opacity !== undefined ? media.opacity : 1.0;
+  const currentFit = media?.fit || 'fill';
+  const currentScaleX = media?.scaleX ?? 1.0;
+  const currentLetterSpacing = media?.letterSpacing ?? 0.08;
 
-  const label = isMedia ? media!.label : field!.label;
-  const side = isMedia ? media!.side : field!.side;
+  const label = isMedia ? (media?.label || fieldId) : field!.label;
+  const side = isMedia ? (media?.side || 'front') : field!.side;
 
   const updateProp = (prop: string, val: any) => {
     if (isMedia) {
@@ -62,7 +77,15 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
         media: {
           ...prev.media,
           [fieldId]: {
-            ...prev.media[fieldId],
+            ...(prev.media[fieldId] || media || {
+              id: fieldId,
+              label: fieldId,
+              side: 'front',
+              x: 0,
+              y: 0,
+              width: currentWidth,
+              height: currentHeight,
+            }),
             [prop]: val,
           },
         },
@@ -179,7 +202,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
                 type="number"
                 min={0}
                 max={config.canvasWidth}
-                value={currentX}
+                value={currentX ?? 0}
                 onChange={(e) => updateProp('x', Math.max(0, parseInt(e.target.value) || 0))}
                 className="w-16 px-1.5 py-0.5 text-xs bg-slate-800 border border-slate-700 rounded text-emerald-400 font-mono font-bold text-right focus:outline-hidden focus:border-emerald-500"
               />
@@ -190,7 +213,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
             type="range"
             min={0}
             max={config.canvasWidth}
-            value={currentX}
+            value={currentX ?? 0}
             onChange={(e) => updateProp('x', parseInt(e.target.value))}
             className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
           />
@@ -248,7 +271,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
                 type="number"
                 min={0}
                 max={config.canvasHeight}
-                value={currentY}
+                value={currentY ?? 0}
                 onChange={(e) => updateProp('y', Math.max(0, parseInt(e.target.value) || 0))}
                 className="w-16 px-1.5 py-0.5 text-xs bg-slate-800 border border-slate-700 rounded text-cyan-400 font-mono font-bold text-right focus:outline-hidden focus:border-cyan-500"
               />
@@ -259,7 +282,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
             type="range"
             min={0}
             max={config.canvasHeight}
-            value={currentY}
+            value={currentY ?? 0}
             onChange={(e) => updateProp('y', parseInt(e.target.value))}
             className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-500"
           />
@@ -382,7 +405,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
                 type="range"
                 min={10}
                 max={44}
-                value={currentFontSize}
+                value={currentFontSize ?? 20}
                 onChange={(e) => updateProp('fontSize', parseInt(e.target.value))}
                 className="flex-1 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
               />
@@ -481,36 +504,126 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
           </div>
         </div>
       ) : (
-        /* Media Dimensions (Photo or QR) */
+        /* Media Dimensions (Photo, Barcode, Fan Cut, or QR) */
         <div className="grid grid-cols-2 gap-3 pt-1">
+          {/* Width */}
           <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 space-y-1.5">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-300">Width</span>
-              <span className="font-mono font-bold text-emerald-400">{currentWidth}px</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={10}
+                  max={1000}
+                  value={currentWidth ?? 100}
+                  onChange={(e) => updateProp('width', Math.max(10, parseInt(e.target.value) || 10))}
+                  className="w-16 px-1.5 py-0.5 text-xs bg-slate-800 border border-slate-700 rounded text-emerald-400 font-mono font-bold text-right focus:outline-hidden focus:border-emerald-500"
+                />
+                <span className="text-[10px] text-slate-500 font-mono">px</span>
+              </div>
             </div>
             <input
               type="range"
-              min={30}
-              max={600}
-              value={currentWidth}
+              min={10}
+              max={950}
+              value={currentWidth ?? 100}
               onChange={(e) => updateProp('width', parseInt(e.target.value))}
               className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
             />
+            <div className="flex items-center justify-between pt-0.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateProp('width', Math.max(10, currentWidth - 10))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  -10
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateProp('width', Math.max(10, currentWidth - 2))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  -2
+                </button>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateProp('width', Math.min(1000, currentWidth + 2))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  +2
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateProp('width', Math.min(1000, currentWidth + 10))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  +10
+                </button>
+              </div>
+            </div>
           </div>
 
+          {/* Height */}
           <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 space-y-1.5">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-300">Height</span>
-              <span className="font-mono font-bold text-emerald-400">{currentHeight}px</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={10}
+                  max={800}
+                  value={currentHeight ?? 100}
+                  onChange={(e) => updateProp('height', Math.max(10, parseInt(e.target.value) || 10))}
+                  className="w-16 px-1.5 py-0.5 text-xs bg-slate-800 border border-slate-700 rounded text-emerald-400 font-mono font-bold text-right focus:outline-hidden focus:border-emerald-500"
+                />
+                <span className="text-[10px] text-slate-500 font-mono">px</span>
+              </div>
             </div>
             <input
               type="range"
-              min={30}
-              max={600}
-              value={currentHeight}
+              min={10}
+              max={650}
+              value={currentHeight ?? 100}
               onChange={(e) => updateProp('height', parseInt(e.target.value))}
               className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
             />
+            <div className="flex items-center justify-between pt-0.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateProp('height', Math.max(10, currentHeight - 10))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  -10
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateProp('height', Math.max(10, currentHeight - 2))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  -2
+                </button>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateProp('height', Math.min(800, currentHeight + 2))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  +2
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateProp('height', Math.min(800, currentHeight + 10))}
+                  className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
+                >
+                  +10
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 space-y-1.5">
@@ -522,7 +635,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
               type="range"
               min={0}
               max={40}
-              value={currentRadius}
+              value={currentRadius ?? 0}
               onChange={(e) => updateProp('borderRadius', parseInt(e.target.value))}
               className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-500"
             />
@@ -531,17 +644,185 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
           <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 space-y-1.5">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-300">Opacity / Transparency</span>
-              <span className="font-mono font-bold text-amber-400">{Math.round(currentOpacity * 100)}%</span>
+              <span className="font-mono font-bold text-amber-400">{Math.round((currentOpacity ?? 1.0) * 100)}%</span>
             </div>
             <input
               type="range"
               min={10}
               max={100}
-              value={Math.round(currentOpacity * 100)}
+              value={Math.round((currentOpacity ?? 1.0) * 100)}
               onChange={(e) => updateProp('opacity', parseInt(e.target.value) / 100)}
               className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
             />
           </div>
+
+          {/* Dedicated Stretch Presets & Scaling for Front Barcode */}
+          {fieldId === 'frontBarcode' && (
+            <div className="col-span-2 bg-emerald-950/40 p-3 rounded-xl border border-emerald-800/70 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-emerald-300 flex items-center gap-1.5">
+                  <span className="text-base">↔</span> 1D Barcode Stretch & Width Presets
+                </span>
+                <span className="font-mono text-xs text-emerald-400 font-bold">Current: {currentWidth}px</span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { label: 'Contracted', w: 360 },
+                  { label: 'Standard', w: 440 },
+                  { label: 'Stretched', w: 520 },
+                  { label: 'Wide Stretch', w: 600 },
+                ].map((preset) => (
+                  <button
+                    key={preset.w}
+                    type="button"
+                    onClick={() => updateProp('width', preset.w)}
+                    className={`px-2 py-1.5 text-[11px] font-semibold rounded-lg transition-all cursor-pointer ${
+                      currentWidth === preset.w
+                        ? 'bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-300'
+                        : 'bg-slate-800/90 text-slate-300 hover:bg-slate-700 hover:text-white'
+                    }`}
+                  >
+                    {preset.label} ({preset.w})
+                  </button>
+                ))}
+              </div>
+
+              {/* Stretch Mode and Horizontal Multiplier */}
+              <div className="grid grid-cols-2 gap-2.5 pt-1.5 border-t border-emerald-900/60">
+                {/* Fit Mode Toggle */}
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-300 mb-1">Barcode Stretch Mode</div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => updateProp('fit', 'fill')}
+                      className={`px-2 py-1 text-[10px] font-bold rounded transition-colors cursor-pointer ${
+                        currentFit === 'fill'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                      title="Stretch barcode bars horizontally and vertically to fill the layer"
+                    >
+                      Stretch (Fill)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateProp('fit', 'contain')}
+                      className={`px-2 py-1 text-[10px] font-bold rounded transition-colors cursor-pointer ${
+                        currentFit === 'contain'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                      title="Preserve aspect ratio inside the box"
+                    >
+                      Keep Ratio
+                    </button>
+                  </div>
+                </div>
+
+                {/* ScaleX Horizontal Expansion Multiplier */}
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-300 mb-1">
+                    <span>Horizontal ScaleX</span>
+                    <span className="font-mono text-emerald-400 font-bold">{Math.round(currentScaleX * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={75}
+                    max={175}
+                    value={Math.round(currentScaleX * 100)}
+                    onChange={(e) => updateProp('scaleX', parseInt(e.target.value) / 100)}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Dedicated Stretch Presets & Scaling for Back FAN Cut */}
+          {fieldId === 'backFanCut' && (
+            <div className="col-span-2 bg-emerald-950/40 p-3 rounded-xl border border-emerald-800/70 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-emerald-300 flex items-center gap-1.5">
+                  <span className="text-base">↔</span> Back FAN Stretch & Width Presets
+                </span>
+                <span className="font-mono text-xs text-emerald-400 font-bold">Current: {currentWidth}px</span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { label: 'Standard', w: 440 },
+                  { label: 'Medium', w: 520 },
+                  { label: 'Wide', w: 600 },
+                  { label: 'Full Width', w: 700 },
+                ].map((preset) => (
+                  <button
+                    key={preset.w}
+                    type="button"
+                    onClick={() => updateProp('width', preset.w)}
+                    className={`px-2 py-1.5 text-[11px] font-semibold rounded-lg transition-all cursor-pointer ${
+                      currentWidth === preset.w
+                        ? 'bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-300'
+                        : 'bg-slate-800/90 text-slate-300 hover:bg-slate-700 hover:text-white'
+                    }`}
+                  >
+                    {preset.label} ({preset.w})
+                  </button>
+                ))}
+              </div>
+
+              {/* Stretch Mode and Horizontal Multiplier */}
+              <div className="grid grid-cols-2 gap-2.5 pt-1.5 border-t border-emerald-900/60">
+                {/* Fit Mode Toggle */}
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-300 mb-1">Image Stretch Mode</div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => updateProp('fit', 'fill')}
+                      className={`px-2 py-1 text-[10px] font-bold rounded transition-colors cursor-pointer ${
+                        currentFit === 'fill'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                      title="Stretch image horizontally and vertically to fill the layer"
+                    >
+                      Stretch (Fill)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateProp('fit', 'contain')}
+                      className={`px-2 py-1 text-[10px] font-bold rounded transition-colors cursor-pointer ${
+                        currentFit === 'contain'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                      title="Preserve aspect ratio inside the box"
+                    >
+                      Keep Ratio
+                    </button>
+                  </div>
+                </div>
+
+                {/* ScaleX Horizontal Expansion Multiplier */}
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-300 mb-1">
+                    <span>Horizontal ScaleX</span>
+                    <span className="font-mono text-emerald-400 font-bold">{Math.round(currentScaleX * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={75}
+                    max={175}
+                    value={Math.round(currentScaleX * 100)}
+                    onChange={(e) => updateProp('scaleX', parseInt(e.target.value) / 100)}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

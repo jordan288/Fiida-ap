@@ -1,4 +1,5 @@
 import { IdCardData } from '../types';
+import { formatGcyyyyMmDd, formatGcWith3LetterMonth, parseDateString } from './ethiopianCalendar';
 
 /**
  * Specifically cleans and purges the word "Demographic" / "Demographics" / "Information" / "Details"
@@ -132,12 +133,13 @@ export function cleanFieldText(fieldKey: string, rawText: string): string {
   }
 
   // If specific field, apply targeted cleanup
-  if (fieldKey === 'fan') {
-    // Keep only digits and spaces for FAN
+  if (fieldKey === 'fan' || fieldKey === 'frontFan') {
+    // Keep only digits without spaces for the front fan number
     const digitsOnly = cleaned.replace(/[^0-9]/g, '');
     if (digitsOnly.length === 16) {
-      return `${digitsOnly.slice(0, 4)} ${digitsOnly.slice(4, 8)} ${digitsOnly.slice(8, 12)} ${digitsOnly.slice(12, 16)}`;
+      return digitsOnly;
     }
+    return cleaned.replace(/\s+/g, '');
   }
 
   if (fieldKey === 'sex') {
@@ -148,6 +150,28 @@ export function cleanFieldText(fieldKey: string, rawText: string): string {
     if (lower.includes('male') || lower.includes('ወንድ') || lower === 'm') {
       return 'Male';
     }
+  }
+
+  if (fieldKey === 'dateOfIssue' || fieldKey === 'dateOfExpiry') {
+    return formatGcWith3LetterMonth(cleaned) || cleaned;
+  }
+
+  if (fieldKey === 'dateOfBirth') {
+    // If it is a single GC date without delimiter |, format to YYYY/MM/DD
+    if (!cleaned.includes('|')) {
+      const parsed = parseDateString(cleaned);
+      if (parsed) {
+        return formatGcyyyyMmDd(cleaned);
+      }
+    }
+    return cleaned;
+  }
+
+  if (fieldKey === 'serialNumber') {
+    // Strip SN prefix or label and return purely the serial number
+    return cleaned
+      .replace(/^(?:SN|Serial\s*(?:Number|No)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-\/]+/i, '')
+      .trim();
   }
 
   return cleaned;
