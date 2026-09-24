@@ -31,13 +31,27 @@ export interface IdCardData {
   qrCodeImageUrl?: string; // High-resolution cropped QR code image extracted directly from the document
   barcodeImageUrl?: string; // High-resolution cropped 1D barcode image extracted directly from document slip
   barcodeData?: string; // Extracted or decoded 1D barcode string / numbers
+  barcodeRenderMode?: 'extracted' | 'vector'; // 'extracted' (slip crop with HD binarization) or 'vector' (Code 128 mathematically generated)
   finImageUrl?: string; // High-resolution cropped FIN/FCN layer extracted directly from document
   finLayerImageUrl?: string; // Exact FIN layer bitmap for precise card cutout
   documentScanUrl?: string; // Full document page scan canvas from PDF or upload for re-cropping
+  detectedPhotoBox?: { x: number; y: number; width: number; height: number }; // Detected Photo bounding coordinates on document slip
   detectedQrBox?: { x: number; y: number; width: number; height: number }; // Detected QR code bounding coordinates on document slip
   detectedBarcodeBox?: { x: number; y: number; width: number; height: number }; // Detected Barcode bounding coordinates on document slip
   detectedFinBox?: { x: number; y: number; width: number; height: number }; // Detected FIN bounding coordinates on document slip
-  serialNumber: string; // e.g. SN : 984729184
+  finLayerCropUrl?: string; // Direct cut layer image of FIN / Card Number region without OCR
+  useFinLayerCrop?: boolean; // Whether to render the direct cut layer image instead of text
+  backFan?: string; // Read back FAN (16-digit or formatted Fayda ID read from cutted FAN or slip)
+  backFanReadSource?: 'cutLayer' | 'slipText' | 'qrPayload' | 'manual'; // Provenance of the back FAN
+  dobLayerCropUrl?: string; // Direct cut layer image of Date of Birth region from PDF slip
+  useDobLayerCrop?: boolean; // Whether to render the direct cut layer image instead of text
+  expiryLayerCropUrl?: string; // Direct cut layer image of Date of Expiry region from PDF slip
+  useExpiryLayerCrop?: boolean; // Whether to render the direct cut layer image instead of text
+  issueLayerCropUrl?: string; // Direct cut layer image of Date of Issue region from PDF slip
+  useIssueLayerCrop?: boolean; // Whether to render the direct cut layer image instead of text
+  photoTransparentUrl?: string; // Portrait with auto-removed transparent background
+  serialNumber: string; // e.g. 7492815 or 984729184
+  photoColorMode?: 'color' | 'grayscale'; // 'color' (default) or 'grayscale' (black & white)
 }
 
 export interface FieldCoordinate {
@@ -67,6 +81,9 @@ export interface MediaCoordinate {
   borderRadius?: number;
   opacity?: number; // 0.1 to 1.0
   isGrayscale?: boolean;
+  fit?: 'fill' | 'contain' | 'cover';
+  scaleX?: number; // Horizontal stretch multiplier (e.g. 1.0, 1.25)
+  letterSpacing?: number;
 }
 
 export interface TemplateConfig {
@@ -89,8 +106,8 @@ export interface TemplateConfig {
   showFieldLabels: boolean; // show sub-labels like "ሙሉ ስም | Full Name"
   
   // Separated Photo Controls (Large and Small)
-  showPrimaryPhoto: boolean; // Show or Cut/Hide 1st photo (main/large)
-  primaryPhotoStyle: 'color' | 'grayscale' | 'sepia' | 'enhanced';
+  showPrimaryPhoto?: boolean; // Show or Cut/Hide 1st photo (main/large)
+  primaryPhotoStyle?: 'color' | 'grayscale' | 'sepia' | 'enhanced';
   showSecondaryPhoto: boolean; // Show or Cut/Hide 2nd photo on bottom right (small)
   secondaryPhotoStyle: 'ghost' | 'grayscale' | 'color' | 'goldBorder';
   
@@ -101,10 +118,27 @@ export interface TemplateConfig {
   // FAN Container
   showFanContainerBox: boolean; // show white box around FAN or transparent
   
-  // FIN/FCN Layer Controls (Droppable Layer, not text)
-  showFinLayer: boolean; // Show or Cut/Hide FIN layer image
-  finLayerAsImage: boolean; // Use extracted FIN image as layer (true) or fallback to text (false)
+  // FIN/FCN Layer Controls
+  showFinLayer?: boolean; // Show or Cut/Hide FIN layer image
+  finLayerAsImage?: boolean; // Use extracted FIN image as layer (true) or fallback to text (false)
   showBarcodeBox: boolean; // show white box around FIN code or transparent
+
+  // Registration / Crop Marks
+  showCornerMarks?: boolean;
+  showNationality?: boolean;
+
+  // Active Card Typography Font
+  cardFontFamily?: string;
+}
+
+export interface CustomFontItem {
+  id: string;
+  name: string; // e.g. "Nokia Pure Headline Bold" or custom user font
+  fileName: string;
+  fileSize: number;
+  format: 'truetype' | 'opentype' | 'woff' | 'woff2';
+  dataUrl: string; // base64 data URI
+  createdAt: string;
 }
 
 export interface TemplatePreset {
@@ -116,6 +150,23 @@ export interface TemplatePreset {
   frontImageUrl?: string;
   backImageUrl?: string;
   config: Partial<TemplateConfig>;
+}
+
+export interface NumberedTemplate {
+  number: number; // Slot number, e.g. 1, 2, 3...
+  id: string;
+  name: string;
+  description?: string;
+  themeColor?: string;
+  badge?: string;
+  frontImageUrl?: string;
+  backImageUrl?: string;
+  frontFileName?: string;
+  backFileName?: string;
+  config: TemplateConfig;
+  coordinates?: CoordinatesConfig; // Saved field and media positions with this template
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CoordinatesConfig {
@@ -142,18 +193,108 @@ export interface AppSettings {
   includeCropMarks: boolean;
   includeMetadataHeader: boolean;
   autoSavePreference: boolean;
+  mirrorPrint?: boolean;
+  cardFontFamily?: string;
+  a4CardWidthMm?: number;
+  a4CardHeightMm?: number;
+  a4SizePreset?: A4CardSizePreset;
 }
+
+export type A4CardSizePreset = 'small' | 'standard' | 'oversized' | 'plus' | 'large' | 'max' | 'xlarge' | 'custom';
+
+export interface A4CardSizePresetInfo {
+  preset: A4CardSizePreset;
+  widthMm: number;
+  heightMm: number;
+  label: string;
+  tag: string;
+  description: string;
+}
+
+export const A4_CARD_SIZE_PRESETS: Record<A4CardSizePreset, A4CardSizePresetInfo> = {
+  small: {
+    preset: 'small',
+    widthMm: 84.00,
+    heightMm: 52.95,
+    label: 'Small (Compact)',
+    tag: '84.0 × 53.0 mm',
+    description: 'Reduced compact size for small badge holders & tight pouches',
+  },
+  standard: {
+    preset: 'standard',
+    widthMm: 85.60,
+    heightMm: 53.98,
+    label: 'Exact CR80',
+    tag: '85.6 × 54.0 mm',
+    description: 'ISO 7810 nominal credit card standard dimension (100% scale)',
+  },
+  oversized: {
+    preset: 'oversized',
+    widthMm: 86.80,
+    heightMm: 54.75,
+    label: 'Standard (+1.2mm)',
+    tag: '86.8 × 54.8 mm',
+    description: 'Anti-undersize compensation for PVC thermal pouches',
+  },
+  plus: {
+    preset: 'plus',
+    widthMm: 87.60,
+    heightMm: 55.25,
+    label: 'Plus (+2.0mm)',
+    tag: '87.6 × 55.3 mm',
+    description: 'Extra bleed margin for rotary cutters & guillotine trimmers',
+  },
+  large: {
+    preset: 'large',
+    widthMm: 88.60,
+    heightMm: 55.88,
+    label: 'Large (+3.0mm)',
+    tag: '88.6 × 55.9 mm',
+    description: 'Fixes IDs printing too small due to printer driver shrink (Fit to Page)',
+  },
+  max: {
+    preset: 'max',
+    widthMm: 89.60,
+    heightMm: 56.50,
+    label: 'Max (+4.0mm)',
+    tag: '89.6 × 56.5 mm',
+    description: 'Maximum oversize for heavy shrink or large commercial laminates',
+  },
+  xlarge: {
+    preset: 'xlarge',
+    widthMm: 90.60,
+    heightMm: 57.15,
+    label: 'XL (+5.0mm)',
+    tag: '90.6 × 57.2 mm',
+    description: 'Extra Large compensation for severe printer driver reduction (93% shrink fix)',
+  },
+  custom: {
+    preset: 'custom',
+    widthMm: 86.80,
+    heightMm: 54.75,
+    label: 'Custom mm',
+    tag: 'Manual mm',
+    description: 'User-calibrated custom millimeter dimensions',
+  },
+};
 
 export interface BatchQueueItem {
   id: string;
   fileName: string;
   fileSize?: string;
-  status: 'pending' | 'processing' | 'ready' | 'error';
+  status: 'pending' | 'processing' | 'ready' | 'error' | 'printed';
   progress?: number;
   extractedData: IdCardData;
   errorMessage?: string;
   uploadedAt: string;
   selected?: boolean;
+  photoColorMode?: 'color' | 'grayscale';
+  templateNumber?: number;
+  customCoordinates?: CoordinatesConfig;
+  processingStep?: string;
+  queuePosition?: number;
+  processingDurationMs?: number;
+  file?: File;
 }
 
 export interface BatchExportOptions {
@@ -162,6 +303,11 @@ export interface BatchExportOptions {
   includeCropMarks: boolean;
   includeMetadataHeader: boolean;
   quality?: number;
+  mirrorPrint?: boolean;
+  photoColorMode?: 'color' | 'grayscale';
+  numberedTemplates?: NumberedTemplate[];
+  activeTemplateNumber?: number;
+  useStudioPositionsAlways?: boolean;
 }
 
 export type A4BatchPrintLayout = 
@@ -179,10 +325,19 @@ export interface A4BatchPrintConfig {
   cardGapY: number; // mm between rows (default 2.0)
   cardGapX: number; // mm between Front & Back columns (default 6.0)
   topMargin: number; // mm top margin (default 10.0)
+  mirrorPrint?: boolean;
+  photoColorMode?: 'color' | 'grayscale';
+  numberedTemplates?: NumberedTemplate[];
+  activeTemplateNumber?: number;
+  useStudioPositionsAlways?: boolean;
+  cardWidthMm?: number;
+  cardHeightMm?: number;
+  duplexSide?: 'front' | 'back';
+  imageFormat?: 'png' | 'jpeg';
 }
 
 export interface PdfMarkedRegion {
-  id: string; // 'photo' | 'qrCode' | 'barcode' | 'fin' | 'fullNameAmharic' | 'fullNameEnglish' | 'fan' | 'fcn' | 'dateOfBirth' | 'sex' | 'phoneNumber' | 'regionAmharic' | 'regionEnglish' | 'zoneAmharic'[...]
+  id: string;
   label: string;
   labelAmh?: string;
   color: string;
@@ -192,6 +347,10 @@ export interface PdfMarkedRegion {
   y: number;
   width: number;
   height: number;
+  layerGroup?: 'photo' | 'id_barcode' | 'dates' | 'text' | 'security';
+  layerOrder?: number;
+  cutToLayerOnly?: boolean;
+  autoRemoveBg?: boolean;
 }
 
 export interface PdfTextItemWithBox {

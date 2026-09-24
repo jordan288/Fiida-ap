@@ -25,7 +25,7 @@ export const SAMPLE_ID_DATA: IdCardData = {
   photoUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
   secondaryPhotoUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&auto=format&fit=crop&q=80',
   qrData: 'FAYDA:4195043670692582:AYELE_ZEKWOS_DAKA:DOB=14051992:EXP=23072034:SIG=30450221008f...VERIFIED_ID_ET',
-  serialNumber: '9482019482',
+  serialNumber: '9482019',
 };
 
 export const SAMPLE_FEMALE_DATA: IdCardData = {
@@ -53,7 +53,7 @@ export const SAMPLE_FEMALE_DATA: IdCardData = {
   photoUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
   secondaryPhotoUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
   qrData: 'FAYDA:4820918237461928:HELEN_TADESSE_GEBRE:DOB=22111996:EXP=09012034:SIG=71b9...VERIFIED_ID_ET',
-  serialNumber: '5819385012',
+  serialNumber: '5819385',
 };
 
 export const SAMPLE_BATCH_APPLICANTS: IdCardData[] = [
@@ -84,7 +84,7 @@ export const SAMPLE_BATCH_APPLICANTS: IdCardData[] = [
     photoUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
     secondaryPhotoUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&auto=format&fit=crop&q=80',
     qrData: 'FAYDA:8392018472913845:MOHAMMED_ABDULLAHI_HASSAN:DOB=05081988:EXP=13032034:SIG=fa42...VERIFIED_ID_ET',
-    serialNumber: '7391028471',
+    serialNumber: '7391028',
   },
   {
     fullNameAmharic: 'በቀለ ቶሎሳ ዱሬሶ',
@@ -111,7 +111,7 @@ export const SAMPLE_BATCH_APPLICANTS: IdCardData[] = [
     photoUrl: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=400&auto=format&fit=crop&q=80',
     secondaryPhotoUrl: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=200&auto=format&fit=crop&q=80',
     qrData: 'FAYDA:6294810394721503:BEKELE_TOLOSA_DURESSO:DOB=19021990:EXP=31052034:SIG=9b12...VERIFIED_ID_ET',
-    serialNumber: '8392014729',
+    serialNumber: '8392014',
   },
   {
     fullNameAmharic: 'ትዕግስት መላኩ አለማየሁ',
@@ -138,7 +138,7 @@ export const SAMPLE_BATCH_APPLICANTS: IdCardData[] = [
     photoUrl: 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=400&auto=format&fit=crop&q=80',
     secondaryPhotoUrl: 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=200&auto=format&fit=crop&q=80',
     qrData: 'FAYDA:5739201849206814:TIGIST_MELAKU_ALEMAYEHU:DOB=30101995:EXP=17022034:SIG=e841...VERIFIED_ID_ET',
-    serialNumber: '4928103857',
+    serialNumber: '9482019',
   },
   {
     fullNameAmharic: 'ያሬድ በርሃነ ገብረሚካኤል',
@@ -165,7 +165,7 @@ export const SAMPLE_BATCH_APPLICANTS: IdCardData[] = [
     photoUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=400&auto=format&fit=crop&q=80',
     secondaryPhotoUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&auto=format&fit=crop&q=80',
     qrData: 'FAYDA:7193840219583720:YARED_BERHANE_GEBREMICHAEL:DOB=12041993:EXP=04052034:SIG=21ad...VERIFIED_ID_ET',
-    serialNumber: '6192840192',
+    serialNumber: '6192840',
   },
 ];
 

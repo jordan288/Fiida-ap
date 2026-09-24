@@ -19,12 +19,15 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { NumberedTemplate, TemplateConfig, CoordinatesConfig } from '../types';
+import { DEFAULT_COORDINATES } from '../data/defaultData';
 import {
   saveTemplateByNumber,
   deleteTemplateByNumber,
   getNextAvailableTemplateNumber,
   compressTemplateImage,
   getDefaultNumberedTemplates,
+  saveTemplateCoordinates,
+  loadTemplateCoordinates,
 } from '../utils/templateStorage';
 
 interface NumberedTemplatesManagerProps {
@@ -177,6 +180,9 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
     };
 
     const existingItem = editingTemplateNumber ? numberedTemplates.find((t) => t.number === editingTemplateNumber) : undefined;
+    const coordsToSave = existingItem?.coordinates || (currentCoordinates ? JSON.parse(JSON.stringify(currentCoordinates)) : JSON.parse(JSON.stringify(DEFAULT_COORDINATES)));
+    saveTemplateCoordinates(formNumber, coordsToSave);
+
     const newTemplateItem: NumberedTemplate = {
       number: formNumber,
       id: `template_slot_${formNumber}`,
@@ -189,7 +195,7 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
       frontFileName: formFrontFileName,
       backFileName: formBackFileName,
       config: templateConfigToSave,
-      coordinates: existingItem?.coordinates || (currentCoordinates ? JSON.parse(JSON.stringify(currentCoordinates)) : undefined),
+      coordinates: coordsToSave,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -231,6 +237,10 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
   // Save current active studio settings & field positions directly into a specific numbered slot
   const handleSaveCurrentToSlot = (slotNumber: number) => {
     const existing = numberedTemplates.find((t) => t.number === slotNumber);
+    const coordsToSave = currentCoordinates
+      ? JSON.parse(JSON.stringify(currentCoordinates))
+      : existing?.coordinates || loadTemplateCoordinates(slotNumber) || JSON.parse(JSON.stringify(DEFAULT_COORDINATES));
+
     const updatedItem: NumberedTemplate = {
       number: slotNumber,
       id: existing?.id || `template_slot_${slotNumber}`,
@@ -243,21 +253,40 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
       frontFileName: currentConfig.frontFileName || existing?.frontFileName || '',
       backFileName: currentConfig.backFileName || existing?.backFileName || '',
       config: { ...currentConfig },
-      coordinates: currentCoordinates ? JSON.parse(JSON.stringify(currentCoordinates)) : existing?.coordinates,
+      coordinates: coordsToSave,
       createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
+    saveTemplateCoordinates(slotNumber, coordsToSave);
     const updatedList = saveTemplateByNumber(updatedItem);
     onUpdateNumberedTemplates(updatedList);
     onSelectTemplateNumber(slotNumber);
-    if (updatedItem.coordinates && setCoordinates) {
-      setCoordinates(updatedItem.coordinates);
+    if (setCoordinates) {
+      setCoordinates(coordsToSave);
     }
 
     try {
       confetti({ particleCount: 40, spread: 55 });
     } catch (e) {}
+  };
+
+  // Reset a specific template's positions back to standard DEFAULT_COORDINATES
+  const handleResetSlotCoordinates = (slotNumber: number) => {
+    const existing = numberedTemplates.find((t) => t.number === slotNumber);
+    if (!existing) return;
+    const defaultCoords = JSON.parse(JSON.stringify(DEFAULT_COORDINATES));
+    const updatedItem: NumberedTemplate = {
+      ...existing,
+      coordinates: defaultCoords,
+      updatedAt: new Date().toISOString(),
+    };
+    saveTemplateCoordinates(slotNumber, defaultCoords);
+    const updatedList = saveTemplateByNumber(updatedItem);
+    onUpdateNumberedTemplates(updatedList);
+    if (activeTemplateNumber === slotNumber && setCoordinates) {
+      setCoordinates(defaultCoords);
+    }
   };
 
   const isSlotExisting =
@@ -357,27 +386,23 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
                       </div>
 
                       {isActive ? (
-                        <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                        <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-full">
                           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                          <span>Active (In Use)</span>
+                          <span>Active (Blank & Positions)</span>
                         </span>
                       ) : (
                         <button
                           type="button"
                           onClick={() => {
                             onSelectTemplateNumber(t.number);
-                            setTemplateConfig(t.config);
-                            if (t.coordinates && setCoordinates) {
-                              setCoordinates(t.coordinates);
-                            }
                             try {
                               confetti({ particleCount: 30, spread: 50 });
                             } catch (e) {}
                           }}
-                          className="text-[11px] font-bold text-slate-300 hover:text-white bg-slate-800 hover:bg-emerald-600 px-2.5 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                          className="text-[11px] font-bold text-slate-300 hover:text-white bg-slate-800 hover:bg-emerald-600 px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm"
                         >
                           <Check className="w-3.5 h-3.5" />
-                          <span>Activate</span>
+                          <span>Activate Template & Positions</span>
                         </button>
                       )}
                     </div>
@@ -423,7 +448,7 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
                     {/* Layer Toggles Summary */}
                     <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400 mb-2">
                       <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-emerald-400 font-medium">
-                        Positions: {t.coordinates ? 'Saved with Template' : 'Standard Default'}
+                        Positions: {t.coordinates ? '✓ Saved with Template' : 'Standard Default'}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800">
                         Labels: {t.config.showFieldLabels ? 'Printed' : 'Hidden (Pure)'}
@@ -438,8 +463,8 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
                   </div>
 
                   {/* Bottom Action Footer */}
-                  <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
+                  <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => handleOpenEditForm(t)}
@@ -453,11 +478,21 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
                       <button
                         type="button"
                         onClick={() => handleSaveCurrentToSlot(t.number)}
-                        className="text-[11px] font-semibold text-slate-300 hover:text-white px-2.5 py-1 rounded-lg bg-slate-800/60 hover:bg-slate-700 transition-colors cursor-pointer flex items-center gap-1"
-                        title="Overwrite this template slot with current studio settings & field positions"
+                        className="text-[11px] font-semibold text-amber-300 hover:text-white px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-600 border border-amber-500/30 transition-colors cursor-pointer flex items-center gap-1"
+                        title="Save current studio field positions and visual blank into this template slot"
                       >
                         <Save className="w-3 h-3 text-amber-400" />
-                        <span>Save Settings & Positions</span>
+                        <span>Save Positions to #{t.number}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleResetSlotCoordinates(t.number)}
+                        className="text-[11px] font-semibold text-slate-400 hover:text-slate-200 px-2 py-1 rounded-lg bg-slate-800/40 hover:bg-slate-800 transition-colors cursor-pointer flex items-center gap-1"
+                        title="Reset field positions of this template slot to default standard"
+                      >
+                        <RefreshCw className="w-3 h-3 text-slate-400" />
+                        <span>Reset Positions</span>
                       </button>
                     </div>
 
@@ -465,7 +500,7 @@ export const NumberedTemplatesManager: React.FC<NumberedTemplatesManagerProps> =
                       <button
                         type="button"
                         onClick={() => handleDeleteTemplate(t.number, t.name)}
-                        className="text-[11px] text-red-400 hover:text-red-300 p-1 rounded-lg hover:bg-red-500/10 transition-colors cursor-pointer"
+                        className="text-[11px] text-red-400 hover:text-red-300 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors cursor-pointer"
                         title={`Delete Template #${t.number}`}
                       >
                         <Trash2 className="w-3.5 h-3.5" />

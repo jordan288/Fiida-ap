@@ -78,10 +78,9 @@ export function resolveItemConfigAndTemplate(
     } : {}),
   };
 
-  // Apply custom item coordinates if specifically set for this card, otherwise use template or studio positions
-  const baseConfig = context?.useStudioPositionsAlways !== false
-    ? (defaultConfig || chosenTemplate?.coordinates || DEFAULT_COORDINATES)
-    : (chosenTemplate?.coordinates || (chosenTemplate ? loadTemplateCoordinates(chosenTemplate.number) : null) || defaultConfig);
+  // Apply custom item coordinates if specifically set for this card, otherwise use the card template's own calibrated positions
+  const templateCoords = chosenTemplate?.coordinates || (chosenTemplate ? loadTemplateCoordinates(chosenTemplate.number) : null);
+  const baseConfig = templateCoords || defaultConfig || DEFAULT_COORDINATES;
 
   const config: CoordinatesConfig = item.customCoordinates
     ? {
@@ -236,7 +235,7 @@ export async function renderOffscreenCard(
       }
     }
 
-    // Secondary Security Photo (Bottom Right) - Direct copy from larger photo, no second layer
+    // Secondary Security Photo (Bottom Right)
     if (templateConfig.showSecondaryPhoto !== false && (cardData.photoUrl || cardData.secondaryPhotoUrl)) {
       const sX = (config.media.photoFrontSecondary?.x ?? 825) * scale;
       const sY = (config.media.photoFrontSecondary?.y ?? 435) * scale;
@@ -254,7 +253,6 @@ export async function renderOffscreenCard(
           ctx.clip();
         }
         if (templateConfig.secondaryPhotoStyle === 'goldBorder') {
-          // Border stroke completely eliminated per user directive ("eleminate border for small image")
           ctx.drawImage(secImg, sX, sY, sW, sH);
         } else if (isGrayscale || templateConfig.secondaryPhotoStyle === 'grayscale' || templateConfig.secondaryPhotoStyle === 'ghost') {
           try {
@@ -303,7 +301,7 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('600', (config.fields.fullNameEnglish?.fontSize || 22) * scale, activeFont);
     ctx.fillText(cardData.fullNameEnglish, nameEnX, nameEnY);
 
-    // DOB - Dual calendar (E.C. | G.C.)
+    // DOB - Dual calendar
     const dobX = config.fields.dateOfBirth.x * scale;
     const dobY = config.fields.dateOfBirth.y * scale;
     const dobDual = formatCardDualDate(cardData.dateOfBirth, cardData.dateOfBirthEth, 'eth_with_gc', { gcMonthName: false });
@@ -318,7 +316,7 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', (config.fields.dateOfBirth.fontSize || 22) * scale, activeFont);
     ctx.fillText(dobDual, dobX, dobY);
 
-    // Sex - Full Male / Female words
+    // Sex
     const sexX = config.fields.sex.x * scale;
     const sexY = config.fields.sex.y * scale;
 
@@ -338,7 +336,7 @@ export async function renderOffscreenCard(
       : (cardData.sex || 'ወንድ / Male');
     ctx.fillText(sexLabel, sexX, sexY);
 
-    // Dual Issue Dates: Layer 1 (G.C.) & Layer 2 (E.C.)
+    // Dual Issue Dates
     const gcField = config.fields.dateOfIssueGc || config.fields.dateOfIssueFront;
     if (gcField) {
       const gcX = (gcField.x ?? 52) * scale;
@@ -396,14 +394,13 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', (config.fields.dateOfExpiry.fontSize || 22) * scale, activeFont);
     ctx.fillText(expDual, expX, expY);
 
-    // Front Side: FAN Card Number (Pure Digits, No Spaces, No White Container Background, No Border)
+    // Front Side: FAN Card Number
     if (templateConfig.showFrontFan || templateConfig.showFanContainerBox) {
       const fanBoxX = (config.fields.fan.x - 70) * scale;
       const fanBoxY = (config.fields.fan.y - 10) * scale;
       const fanBoxW = (templateConfig.showSecondaryPhoto ? 465 : 540) * scale;
       const fanBoxH = 60 * scale;
 
-      // User directive: "use the font for all texts and remove the spaces from the front fan number"
       if (templateConfig.showFrontFan !== false) {
         ctx.fillStyle = config.fields.fan.color || '#0f172a';
         ctx.font = getCanvasFontString('bold', (config.fields.fan.fontSize || 28) * scale, activeFont);
@@ -429,7 +426,6 @@ export async function renderOffscreenCard(
         ctx.translate(-(bcX + bcW / 2), -(bcY + bcH / 2));
       }
 
-      // Barcode Rendering: Prioritize authentic exact cutted barcode from document slip
       if (cardData.barcodeImageUrl) {
         try {
           const bcImg = await loadImage(cardData.barcodeImageUrl);
@@ -451,11 +447,9 @@ export async function renderOffscreenCard(
             }
             ctx.drawImage(bcImg, drawX, drawY, drawW, drawH);
           } else {
-            // Stretch horizontally and vertically to fill exact layer box
             ctx.drawImage(bcImg, bcX, bcY, bcW, bcH);
           }
         } catch (e) {
-          console.warn('Could not draw cutted barcode image:', e);
           drawCode128Direct(ctx, cardData.fan || '4195043670692582', bcX, bcY, bcW, bcH, fanColor);
         }
       } else {
@@ -481,7 +475,6 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', (config.fields.phoneNumber?.fontSize ?? 24) * scale, activeFont);
     ctx.fillText(cardData.phoneNumber || '0928574836', phoneX, phoneY);
 
-    // Nationality (Removed by default per standard Ethiopian Fayda ID)
     if (templateConfig.showNationality && config.fields.nationality) {
       const natX = config.fields.nationality.x * scale;
       const natY = config.fields.nationality.y * scale;
@@ -495,8 +488,7 @@ export async function renderOffscreenCard(
       ctx.fillText(`${cardData.nationalityAmharic || 'ኢትዮጵያዊ'} | ${cardData.nationalityEnglish || 'Ethiopian'}`, natX, natY);
     }
 
-    // Step-by-Step Address: Separate Layers on the same font size
-    // Step 1: Region Amharic
+    // Step-by-Step Address
     const regAmX = (config.fields.regionAmharic?.x ?? 45) * scale;
     const regAmY = (config.fields.regionAmharic?.y ?? 275) * scale;
     const regFontSize = (config.fields.regionAmharic?.fontSize ?? 20) * scale;
@@ -511,7 +503,6 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', regFontSize, activeFont);
     ctx.fillText(cardData.regionAmharic || 'ሲዳማ', regAmX, regAmY);
 
-    // Step 2: Region English (Same Font Size as Amharic!)
     const regEnX = (config.fields.regionEnglish?.x ?? config.fields.regionAmharic?.x ?? 45) * scale;
     const regEnY = (config.fields.regionEnglish?.y ?? ((config.fields.regionAmharic?.y ?? 275) + 27)) * scale;
     const regEnFontSize = (config.fields.regionEnglish?.fontSize ?? config.fields.regionAmharic?.fontSize ?? 20) * scale;
@@ -526,7 +517,6 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', regEnFontSize, activeFont);
     ctx.fillText(cardData.regionEnglish || 'Sidama', regEnX, regEnY);
 
-    // Step 3: Zone / Subcity Amharic
     const zoneAmX = (config.fields.zoneAmharic?.x ?? config.fields.zoneSubcity?.x ?? 45) * scale;
     const zoneAmY = (config.fields.zoneAmharic?.y ?? config.fields.zoneSubcity?.y ?? 345) * scale;
     const zoneFontSize = (config.fields.zoneAmharic?.fontSize ?? config.fields.zoneSubcity?.fontSize ?? 20) * scale;
@@ -541,7 +531,6 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', zoneFontSize, activeFont);
     ctx.fillText(cardData.zoneAmharic || 'አርበጎና', zoneAmX, zoneAmY);
 
-    // Step 4: Zone / Subcity English (Same Font Size as Amharic!)
     const zoneEnX = (config.fields.zoneEnglish?.x ?? config.fields.zoneAmharic?.x ?? config.fields.zoneSubcity?.x ?? 45) * scale;
     const zoneEnY = (config.fields.zoneEnglish?.y ?? ((config.fields.zoneAmharic?.y ?? config.fields.zoneSubcity?.y ?? 345) + 27)) * scale;
     const zoneEnFontSize = (config.fields.zoneEnglish?.fontSize ?? config.fields.zoneAmharic?.fontSize ?? config.fields.zoneSubcity?.fontSize ?? 20) * scale;
@@ -556,7 +545,6 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', zoneEnFontSize, activeFont);
     ctx.fillText(cardData.zoneEnglish || 'Arbegona', zoneEnX, zoneEnY);
 
-    // Step 5: Woreda Amharic
     const worAmX = (config.fields.woredaAmharic?.x ?? config.fields.woredaKebele?.x ?? 45) * scale;
     const worAmY = (config.fields.woredaAmharic?.y ?? config.fields.woredaKebele?.y ?? 415) * scale;
     const worFontSize = (config.fields.woredaAmharic?.fontSize ?? config.fields.woredaKebele?.fontSize ?? 20) * scale;
@@ -571,7 +559,6 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', worFontSize, activeFont);
     ctx.fillText(cardData.woredaAmharic || 'ወረዳ 01', worAmX, worAmY);
 
-    // Step 6: Woreda English (Same Font Size as Amharic!)
     const worEnX = (config.fields.woredaEnglish?.x ?? config.fields.woredaAmharic?.x ?? config.fields.woredaKebele?.x ?? 45) * scale;
     const worEnY = (config.fields.woredaEnglish?.y ?? ((config.fields.woredaAmharic?.y ?? config.fields.woredaKebele?.y ?? 415) + 27)) * scale;
     const worEnFontSize = (config.fields.woredaEnglish?.fontSize ?? config.fields.woredaAmharic?.fontSize ?? config.fields.woredaKebele?.fontSize ?? 20) * scale;
@@ -586,7 +573,7 @@ export async function renderOffscreenCard(
     ctx.font = getCanvasFontString('bold', worEnFontSize, activeFont);
     ctx.fillText(cardData.woredaEnglish || cardData.woredaAmharic || 'Woreda 01', worEnX, worEnY);
 
-    // Bottom Left: Back FAN Cutter Layer (Authentic Crop from Slip) OR FCN / FIN Box
+    // Bottom Left: Back FAN Cutter Layer OR FCN / FIN Box
     if (cardData.finLayerCropUrl && cardData.useFinLayerCrop === true) {
       const finX = (config.media.backFanCut?.x ?? 45) * scale;
       const finY = (config.media.backFanCut?.y ?? 505) * scale;
@@ -609,7 +596,6 @@ export async function renderOffscreenCard(
           ctx.clip();
         }
 
-        // Draw solid pure white surface under Back FAN
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(finX, finY, finW, finH);
 
@@ -640,7 +626,6 @@ export async function renderOffscreenCard(
 
           ctx.drawImage(finImg, drawX, drawY, drawW, drawH);
         } else {
-          // Stretch horizontally and vertically to fill the exact layer width and height
           ctx.drawImage(finImg, finX, finY, finW, finH);
         }
         ctx.restore();
@@ -659,7 +644,6 @@ export async function renderOffscreenCard(
         ? `${digits.slice(0, 4)}   ${digits.slice(4, 8)}   ${digits.slice(8, 12)}   ${digits.slice(12, 16)}`
         : rawFan;
       
-      // Draw solid white background for Back FAN digits
       ctx.save();
       if (finRadius > 0) {
         roundedRectPath(ctx, bX, bY, bW, bH, finRadius);
@@ -669,8 +653,8 @@ export async function renderOffscreenCard(
       ctx.fillRect(bX, bY, bW, bH);
       ctx.restore();
 
-      // Main read back FAN text (Pure Black / Slate Digits, Slender Regular 400 weight, never Nokia Pure Headline Bold)
-      const finWeight = config.fields.barcodeText?.fontWeight === 'bold' ? '600' : (config.fields.barcodeText?.fontWeight === 'medium' ? '500' : '400');
+      const rawWeight = String(config.fields.barcodeText?.fontWeight || '');
+      const finWeight = rawWeight === '700' || rawWeight === '600' || rawWeight === 'bold' ? '600' : '400';
       const finFontSize = (config.fields.barcodeText?.fontSize || 19) * scale;
       ctx.fillStyle = config.fields.barcodeText?.color || '#111827';
       ctx.font = `${finWeight} ${finFontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`;
@@ -679,7 +663,7 @@ export async function renderOffscreenCard(
       ctx.fillText(backFanValue, bX + bW / 2, bY + bH / 2);
     }
 
-    // QR Code (Frameless - direct high-density render without white border)
+    // QR Code
     const qrX = config.media.qrCodeBack.x * scale;
     const qrY = config.media.qrCodeBack.y * scale;
     const qrW = config.media.qrCodeBack.width * scale;
@@ -690,7 +674,6 @@ export async function renderOffscreenCard(
         const cleanQrUrl = await makeQrTransparentAndBorderless(cardData.qrCodeImageUrl);
         const qrImg = await loadImage(cleanQrUrl);
         ctx.save();
-        // Remove white border completely: transparent background with multiply blend mode
         ctx.globalCompositeOperation = 'multiply';
         ctx.drawImage(qrImg, qrX, qrY, qrW, qrH);
         ctx.restore();
@@ -704,7 +687,7 @@ export async function renderOffscreenCard(
           errorCorrectionLevel: 'M',
           margin: 0,
           width: qrW,
-          color: { dark: '#000000', light: '#00000000' }, // completely transparent light/background
+          color: { dark: '#000000', light: '#00000000' },
         });
         const qrImg = await loadImage(qrDataUrl);
         ctx.save();
@@ -714,7 +697,7 @@ export async function renderOffscreenCard(
       } catch (e) {}
     }
 
-    // Serial Number (Matching CardRenderer left & top coordinates with solid white background)
+    // Serial Number
     const snX = config.fields.serialNumber.x * scale;
     const snY = config.fields.serialNumber.y * scale;
     const snFontSize = config.fields.serialNumber.fontSize * scale;
@@ -725,14 +708,12 @@ export async function renderOffscreenCard(
     ctx.textBaseline = 'top';
     ctx.font = getCanvasFontString('bold', snFontSize, activeFont);
 
-    // Measure text dimensions to draw a crisp solid white background container
     const snMetrics = ctx.measureText(snText);
     const snPadX = 6 * scale;
     const snPadY = 2.5 * scale;
     const snBgW = snMetrics.width + snPadX * 2;
     const snBgH = snFontSize * 1.35;
 
-    // Draw white background
     ctx.fillStyle = '#ffffff';
     if (typeof (ctx as any).roundRect === 'function') {
       ctx.beginPath();
@@ -742,21 +723,16 @@ export async function renderOffscreenCard(
       ctx.fillRect(snX - snPadX, snY - snPadY, snBgW, snBgH);
     }
 
-    // Draw serial number text
     ctx.fillStyle = config.fields.serialNumber.color || '#111827';
     ctx.fillText(snText, snX, snY);
     ctx.restore();
   }
 
-  // 4 Corner Calibration & Registration Marks:
-  // User directive: "what are TR(0,0) and related when i downloade as A4 , can you eliminate it"
-  // Calibration marks (TL, TR, BL, BR and perimeter guides) are ONLY for on-screen editor alignment.
-  // They are strictly eliminated from exported cards, A4 PDF print sheets, and downloaded images.
   if (renderOptions?.includeCalibrationMarks) {
     drawCornerCalibrationMarksOnCanvas(ctx, w, h, scale);
   }
 
-  // Handle Horizontal Mirroring if requested (for inkjet PVC / transfer sheet printing)
+  // Handle Horizontal Mirroring (Mirrors the individual card)
   let finalCanvas: HTMLCanvasElement = canvas;
   if (renderOptions?.mirrorPrint) {
     const mCanvas = document.createElement('canvas');
@@ -771,7 +747,6 @@ export async function renderOffscreenCard(
     }
   }
 
-  // High-efficiency export: JPEG supersampled at 300 DPI dramatically reduces storage footprint by ~90%
   const exportFormat = renderOptions?.format || 'jpeg';
   const exportQuality = renderOptions?.quality ?? 0.90;
   if (exportFormat === 'png') {
@@ -780,10 +755,6 @@ export async function renderOffscreenCard(
   return finalCanvas.toDataURL('image/jpeg', exportQuality);
 }
 
-/**
- * Batch Export all items in queue into a consolidated multi-page A4 PDF
- * Renders full-page 300 DPI lossless PNG sheets with pure solid white background (NEVER transparent).
- */
 export async function exportBatchToA4Pdf(
   items: BatchQueueItem[],
   config: CoordinatesConfig,
@@ -815,7 +786,6 @@ export async function exportBatchToA4Pdf(
   const PAGE_WIDTH_MM = 210;
   const PAGE_HEIGHT_MM = 297;
 
-  // Build the ordered task list of individual sheets to render
   interface SheetTask {
     chunk: BatchQueueItem[];
     label: string;
@@ -865,7 +835,6 @@ export async function exportBatchToA4Pdf(
       });
     }
   } else {
-    // Default: '5_per_page_paired' (5 rows × 2 columns: Front on left, Back on right)
     const chunkSize = 5;
     const totalChunks = Math.ceil(activeItems.length / chunkSize);
     for (let c = 0; c < totalChunks; c++) {
@@ -888,11 +857,9 @@ export async function exportBatchToA4Pdf(
       doc.addPage('a4', 'portrait');
     }
 
-    // 1. Fill entire PDF page background with pure solid white (NEVER transparent)
     doc.setFillColor(255, 255, 255);
     doc.rect(0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM, 'F');
 
-    // 2. Render Full Page Canvas at 300 DPI with solid white background and lossless PNG cards
     const sheetCanvas = await renderBatchA4SheetCanvas(
       task.chunk,
       config,
@@ -900,13 +867,10 @@ export async function exportBatchToA4Pdf(
       { ...options, layout, duplexSide: task.duplexSide },
       s,
       totalSheets,
-      300 // 300 DPI industry standard for high-definition print
+      300 
     );
 
-    // 3. Export as lossless full-page PNG Data URL
     const fullPagePng = sheetCanvas.toDataURL('image/png', 1.0);
-
-    // 4. Add full-page PNG to PDF covering the full 210mm x 297mm page
     doc.addImage(fullPagePng, 'PNG', 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM, undefined, 'SLOW');
   }
 
@@ -916,9 +880,6 @@ export async function exportBatchToA4Pdf(
   onProgress?.(totalSheets, totalSheets, 'Batch A4 PDF export complete with Full Page PNG & White Background!');
 }
 
-/**
- * Batch Export all items into high-resolution full-page 300 DPI PNG images (solid white background, never transparent)
- */
 export async function exportBatchToA4Png(
   items: BatchQueueItem[],
   config: CoordinatesConfig,
@@ -990,7 +951,6 @@ export async function exportBatchToA4Png(
       });
     }
   } else {
-    // 5_per_page_paired
     const chunkSize = 5;
     const totalChunks = Math.ceil(activeItems.length / chunkSize);
     for (let c = 0; c < totalChunks; c++) {
@@ -1032,7 +992,6 @@ export async function exportBatchToA4Png(
     document.body.removeChild(a);
     onProgress?.(1, 1, 'A4 Full Page PNG Downloaded (Solid White Background)!');
   } else {
-    // Package all PNG sheets in a ZIP archive
     const zip = new JSZip();
     const folder = zip.folder('A4_Print_Sheets_300DPI_PNG');
 
@@ -1069,9 +1028,6 @@ export async function exportBatchToA4Png(
   }
 }
 
-/**
- * Batch Export all items into a ZIP Archive with HD images & individual sheets
- */
 export async function exportBatchToZipArchive(
   items: BatchQueueItem[],
   config: CoordinatesConfig,
@@ -1124,7 +1080,6 @@ export async function exportBatchToZipArchive(
     const mirrorTag = mirrorPrint ? '_MIRRORED' : '';
     const prefix = `${String(i + 1).padStart(2, '0')}_${cleanName}_${cleanFan}`;
 
-    // Add high-resolution compressed JPEG to ZIP (cuts file footprint by ~90-95%)
     frontFolder?.file(`${prefix}_FRONT${mirrorTag}.jpg`, frontImg.split(',')[1], { base64: true });
     backFolder?.file(`${prefix}_BACK${mirrorTag}.jpg`, backImg.split(',')[1], { base64: true });
 
@@ -1143,7 +1098,6 @@ export async function exportBatchToZipArchive(
     });
   }
 
-  // Add Manifest JSON and README
   zip.file('batch_manifest.json', JSON.stringify(manifestData, null, 2));
   zip.file(
     'README.txt',
@@ -1287,7 +1241,6 @@ function drawCornerCalibrationMarksOnCanvas(
   scale: number
 ) {
   ctx.save();
-  // 1. Template Perimeter Registration Guide Border (dashed emerald)
   ctx.save();
   ctx.strokeStyle = '#10b981';
   ctx.lineWidth = 1.5 * scale;
@@ -1304,7 +1257,6 @@ function drawCornerCalibrationMarksOnCanvas(
   const rDot = 4.5 * scale;
   const rInner = 1.8 * scale;
 
-  // Helper to draw corner L-mark
   const drawCornerL = (
     cx: number,
     cy: number,
@@ -1315,7 +1267,6 @@ function drawCornerCalibrationMarksOnCanvas(
     chipOffsetY: number
   ) => {
     ctx.save();
-    // Outer contrast frame
     ctx.strokeStyle = '#020617';
     ctx.lineWidth = 4.5 * scale;
     ctx.lineCap = 'square';
@@ -1325,7 +1276,6 @@ function drawCornerCalibrationMarksOnCanvas(
     ctx.lineTo(cx + dirX * armLen, cy);
     ctx.stroke();
 
-    // Inner precision emerald arm
     ctx.strokeStyle = '#10b981';
     ctx.lineWidth = 2.5 * scale;
     ctx.beginPath();
@@ -1334,7 +1284,6 @@ function drawCornerCalibrationMarksOnCanvas(
     ctx.lineTo(cx + dirX * armLen, cy);
     ctx.stroke();
 
-    // Distance offset ticks
     ctx.lineWidth = 1.5 * scale;
     ctx.beginPath();
     ctx.moveTo(cx + dirX * tick12, cy);
@@ -1345,12 +1294,10 @@ function drawCornerCalibrationMarksOnCanvas(
     ctx.lineTo(cx + dirX * tick7, cy + dirY * tick12);
     ctx.moveTo(cx, cy + dirY * tick24);
     ctx.lineTo(cx + dirX * tick7, cy + dirY * tick24);
-    // 45 deg angle notch
     ctx.moveTo(cx, cy);
     ctx.lineTo(cx + dirX * notch14, cy + dirY * notch14);
     ctx.stroke();
 
-    // Target Dot
     ctx.fillStyle = '#10b981';
     ctx.strokeStyle = '#020617';
     ctx.lineWidth = 1.2 * scale;
@@ -1364,7 +1311,6 @@ function drawCornerCalibrationMarksOnCanvas(
     ctx.arc(cx, cy, rInner, 0, Math.PI * 2);
     ctx.fill();
 
-    // Coordinate Chip
     const chipW = 88 * scale;
     const chipH = 20 * scale;
     ctx.fillStyle = 'rgba(9, 13, 22, 0.92)';
@@ -1383,13 +1329,9 @@ function drawCornerCalibrationMarksOnCanvas(
     ctx.restore();
   };
 
-  // 1. TOP-LEFT (0, 0)
   drawCornerL(0, 0, 1, 1, 'TL (0, 0)', 10 * scale, 10 * scale);
-  // 2. TOP-RIGHT (w, 0)
   drawCornerL(w, 0, -1, 1, 'TR (1012, 0)', w - 98 * scale, 10 * scale);
-  // 3. BOTTOM-LEFT (0, h)
   drawCornerL(0, h, 1, -1, 'BL (0, 638)', 10 * scale, h - 30 * scale);
-  // 4. BOTTOM-RIGHT (w, h)
   drawCornerL(w, h, -1, -1, 'BR (1012, 638)', w - 108 * scale, h - 30 * scale);
 
   ctx.restore();
@@ -1442,16 +1384,12 @@ export function drawCornerCropMarks(
   doc.setDrawColor(color[0], color[1], color[2]);
   doc.setLineWidth(0.2);
 
-  // Top-Left
   doc.line(x - offset - len, y, x - offset, y);
   doc.line(x, y - offset - len, x, y - offset);
-  // Top-Right
   doc.line(x + w + offset, y, x + w + offset + len, y);
   doc.line(x + w, y - offset - len, x + w, y - offset);
-  // Bottom-Left
   doc.line(x - offset - len, y + h, x - offset, y + h);
   doc.line(x, y + h + offset, x, y + h + offset + len);
-  // Bottom-Right
   doc.line(x + w + offset, y + h, x + w + offset + len, y + h);
   doc.line(x + w, y + h + offset, x + w, y + h + offset + len);
 }
@@ -1475,7 +1413,6 @@ export async function renderBatchA4SheetCanvas(
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Failed to create canvas context');
 
-  // CRITICAL: Pure solid white paper sheet (100% opaque, NEVER transparent)
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvasW, canvasH);
 
@@ -1495,7 +1432,6 @@ export async function renderBatchA4SheetCanvas(
   const cr80WPx = cr80WMm * pxPerMm;
   const cr80HPx = cr80HMm * pxPerMm;
 
-  // Dynamically calculate effective gap and top margin to avoid bottom page cutoff when cards are larger
   const naturalTotalH = chunk.length * cr80HMm + Math.max(0, chunk.length - 1) * cardGapYMm;
   const effectiveGapYMm =
     naturalTotalH > 291
@@ -1617,10 +1553,17 @@ export async function renderBatchA4SheetCanvas(
       }
     }
   } else {
-    // DEFAULT & RECOMMENDED: '5_per_page_paired' (5 rows × 2 columns: Front on left, Back on right)
+    // DEFAULT & RECOMMENDED: '5_per_page_paired'
     const totalPairWidthMm = cr80WMm * 2 + cardGapXMm;
-    const xFrontMm = (210 - totalPairWidthMm) / 2;
-    const xBackMm = xFrontMm + cr80WMm + cardGapXMm;
+    const xLeftMm = (210 - totalPairWidthMm) / 2;
+    const xRightMm = xLeftMm + cr80WMm + cardGapXMm;
+
+    // Core Logic: Swap Front and Back positions if mirror print is enabled
+    const xFrontMm = mirrorPrint ? xRightMm : xLeftMm;
+    const xBackMm = mirrorPrint ? xLeftMm : xRightMm;
+
+    const xLeftPx = xLeftMm * pxPerMm;
+    const xRightPx = xRightMm * pxPerMm;
     const xFrontPx = xFrontMm * pxPerMm;
     const xBackPx = xBackMm * pxPerMm;
 
@@ -1651,32 +1594,30 @@ export async function renderBatchA4SheetCanvas(
       ctx.drawImage(frontImg, xFrontPx, yPx, cr80WPx, cr80HPx);
       ctx.drawImage(backImg, xBackPx, yPx, cr80WPx, cr80HPx);
 
-      // Crop Marks
       if (showCropMarks) {
         drawCanvasCornerCropMarks(ctx, xFrontPx, yPx, cr80WPx, cr80HPx, pxPerMm);
         drawCanvasCornerCropMarks(ctx, xBackPx, yPx, cr80WPx, cr80HPx, pxPerMm);
       }
 
-      // Metadata Labels
+      // Pin metadata labels to the left edge regardless of which card is positioned there
       if (showLabels) {
         ctx.fillStyle = '#64748b';
         ctx.font = `bold ${Math.max(9, Math.round(8 * pxPerMm / 3.8))}px sans-serif`;
         ctx.textAlign = 'left';
         ctx.fillText(
           `${r + 1}. ${item.extractedData.fullNameEnglish || 'Card'} - ${item.extractedData.fan || ''}`,
-          xFrontPx,
+          xLeftPx,
           yPx - 2 * pxPerMm
         );
       }
 
-      // Cut Lines
       if (showCutLines) {
         ctx.save();
         ctx.strokeStyle = '#cbd5e1';
         ctx.lineWidth = Math.max(1, Math.round(pxPerMm / 8));
         ctx.setLineDash([4 * pxPerMm / 6, 4 * pxPerMm / 6]);
 
-        const midXPx = (xFrontMm + cr80WMm + cardGapXMm / 2) * pxPerMm;
+        const midXPx = (xLeftMm + cr80WMm + cardGapXMm / 2) * pxPerMm;
         ctx.beginPath();
         ctx.moveTo(midXPx, yPx - 2 * pxPerMm / 6);
         ctx.lineTo(midXPx, yPx + cr80HPx + 2 * pxPerMm / 6);
@@ -1685,8 +1626,8 @@ export async function renderBatchA4SheetCanvas(
         if (r > 0) {
           const divYPx = (yMm - effectiveGapYMm / 2) * pxPerMm;
           ctx.beginPath();
-          ctx.moveTo(xFrontPx - 10 * pxPerMm / 6, divYPx);
-          ctx.lineTo(xBackPx + cr80WPx + 10 * pxPerMm / 6, divYPx);
+          ctx.moveTo(xLeftPx - 10 * pxPerMm / 6, divYPx);
+          ctx.lineTo(xRightPx + cr80WPx + 10 * pxPerMm / 6, divYPx);
           ctx.stroke();
         }
         ctx.restore();
@@ -1712,7 +1653,6 @@ function drawCanvasCornerCropMarks(
   ctx.strokeStyle = '#94a3b8';
   ctx.lineWidth = 1;
 
-  // TL
   ctx.beginPath();
   ctx.moveTo(x - offset - len, y);
   ctx.lineTo(x - offset, y);
@@ -1720,7 +1660,6 @@ function drawCanvasCornerCropMarks(
   ctx.lineTo(x, y - offset);
   ctx.stroke();
 
-  // TR
   ctx.beginPath();
   ctx.moveTo(x + w + offset, y);
   ctx.lineTo(x + w + offset + len, y);
@@ -1728,7 +1667,6 @@ function drawCanvasCornerCropMarks(
   ctx.lineTo(x + w, y - offset);
   ctx.stroke();
 
-  // BL
   ctx.beginPath();
   ctx.moveTo(x - offset - len, y + h);
   ctx.lineTo(x - offset, y + h);
@@ -1736,7 +1674,6 @@ function drawCanvasCornerCropMarks(
   ctx.lineTo(x, y + h + offset + len);
   ctx.stroke();
 
-  // BR
   ctx.beginPath();
   ctx.moveTo(x + w + offset, y + h);
   ctx.lineTo(x + w + offset + len, y + h);

@@ -34,6 +34,7 @@ import {
 import { BatchQueueItem, CoordinatesConfig, IdCardData, TemplateConfig, NumberedTemplate, FieldCoordinate, MediaCoordinate } from '../types';
 import { DEFAULT_COORDINATES, SAMPLE_ID_DATA } from '../data/defaultData';
 import { autoRemovePhotoBackground } from '../utils/imageProcessor';
+import { loadTemplateCoordinates, saveTemplateCoordinates } from '../utils/templateStorage';
 import { CardRenderer } from './CardRenderer';
 
 interface BatchPositionEditorModalProps {
@@ -77,12 +78,17 @@ export const BatchPositionEditorModal: React.FC<BatchPositionEditorModalProps> =
 
   const currentItem: BatchQueueItem | undefined = queue[selectedItemIndex] || queue[0];
 
+  // Current active template configuration and coordinates
+  const currentTemplate = numberedTemplates?.find((t) => t.number === activeTemplateNumber);
+  const effectiveTemplateConfig = currentTemplate?.config || templateConfig;
+
   // Working coordinates state (local copy for real-time live preview before saving)
   const [workingCoords, setWorkingCoords] = useState<CoordinatesConfig>(() => {
     if (currentItem?.customCoordinates) {
       return JSON.parse(JSON.stringify(currentItem.customCoordinates));
     }
-    return JSON.parse(JSON.stringify(propConfig));
+    const tplCoords = currentTemplate?.coordinates || loadTemplateCoordinates(activeTemplateNumber) || propConfig;
+    return JSON.parse(JSON.stringify(tplCoords));
   });
 
   // Keep track of scope: 'all' applies to entire batch / template, 'item' applies only to currentItem
@@ -102,21 +108,22 @@ export const BatchPositionEditorModal: React.FC<BatchPositionEditorModalProps> =
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isCuttingBothBg, setIsCuttingBothBg] = useState<boolean>(false);
 
-  // When switching applicant, sync working coordinates
+  // When switching applicant or template, sync working coordinates
   useEffect(() => {
     if (currentItem) {
       if (currentItem.customCoordinates) {
         setWorkingCoords(JSON.parse(JSON.stringify(currentItem.customCoordinates)));
         setApplyScope('item');
       } else {
-        setWorkingCoords(JSON.parse(JSON.stringify(propConfig)));
+        const tplCoords = currentTemplate?.coordinates || loadTemplateCoordinates(activeTemplateNumber) || propConfig;
+        setWorkingCoords(JSON.parse(JSON.stringify(tplCoords)));
         setApplyScope('all');
       }
       if (currentItem.photoColorMode) {
         setPhotoColorMode(currentItem.photoColorMode);
       }
     }
-  }, [selectedItemIndex, currentItem?.id]);
+  }, [selectedItemIndex, currentItem?.id, activeTemplateNumber, propConfig, currentTemplate?.coordinates]);
 
   if (!isOpen) return null;
 
@@ -352,12 +359,15 @@ export const BatchPositionEditorModal: React.FC<BatchPositionEditorModalProps> =
   // Save changes
   const handleSave = () => {
     onSaveBatchConfig(workingCoords, applyScope, currentItem?.id);
+    if (applyScope === 'all' && activeTemplateNumber) {
+      saveTemplateCoordinates(activeTemplateNumber, workingCoords);
+    }
     try {
       confetti({ particleCount: 70, spread: 60, origin: { y: 0.6 } });
     } catch {}
     showToast(
       applyScope === 'all'
-        ? '✓ Positions successfully applied to ALL batch cards!'
+        ? `✓ Positions saved to Template #${activeTemplateNumber} & applied to batch!`
         : `✓ Positions successfully saved for ${currentItem?.extractedData.fullNameEnglish}!`
     );
   };
@@ -472,7 +482,15 @@ export const BatchPositionEditorModal: React.FC<BatchPositionEditorModalProps> =
                 <span className="text-[10px] font-bold text-slate-400">Tpl:</span>
                 <select
                   value={activeTemplateNumber}
-                  onChange={(e) => onSelectTemplateNumber(parseInt(e.target.value, 10))}
+                  onChange={(e) => {
+                    const newNum = parseInt(e.target.value, 10);
+                    onSelectTemplateNumber(newNum);
+                    const target = numberedTemplates.find((t) => t.number === newNum);
+                    const targetCoords = target?.coordinates || loadTemplateCoordinates(newNum) || propConfig;
+                    if (targetCoords) {
+                      setWorkingCoords(JSON.parse(JSON.stringify(targetCoords)));
+                    }
+                  }}
                   className="bg-slate-900 border border-slate-700 text-xs font-bold rounded-lg px-2 py-0.5 text-white outline-none cursor-pointer"
                 >
                   {numberedTemplates.map((t) => (
@@ -639,7 +657,7 @@ export const BatchPositionEditorModal: React.FC<BatchPositionEditorModalProps> =
                         side="front"
                         data={applicantData}
                         config={workingCoords}
-                        templateConfig={templateConfig}
+                        templateConfig={effectiveTemplateConfig}
                         scale={previewScale}
                         highlightField={selectedFieldId}
                         onSelectField={(id) => setSelectedFieldId(id)}
@@ -670,7 +688,7 @@ export const BatchPositionEditorModal: React.FC<BatchPositionEditorModalProps> =
                         side="back"
                         data={applicantData}
                         config={workingCoords}
-                        templateConfig={templateConfig}
+                        templateConfig={effectiveTemplateConfig}
                         scale={previewScale}
                         highlightField={selectedFieldId}
                         onSelectField={(id) => setSelectedFieldId(id)}

@@ -17,16 +17,21 @@ import {
   LayoutTemplate,
   Crosshair,
   Scan,
-  Hash
+  Hash,
+  Save
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
 import { TemplateConfig, TemplatePreset, NumberedTemplate, CoordinatesConfig } from '../types';
-import { PRESET_TEMPLATES, DEFAULT_TEMPLATE_CONFIG } from '../data/defaultData';
+import { PRESET_TEMPLATES, DEFAULT_TEMPLATE_CONFIG, DEFAULT_COORDINATES } from '../data/defaultData';
 import { NumberedTemplatesManager } from './NumberedTemplatesManager';
 import { 
   loadNumberedTemplates, 
   saveNumberedTemplates, 
   getActiveTemplateNumber, 
-  setActiveTemplateNumber 
+  setActiveTemplateNumber,
+  saveTemplateCoordinates,
+  loadTemplateCoordinates,
+  saveTemplateByNumber
 } from '../utils/templateStorage';
 
 interface CustomTemplateModalProps {
@@ -80,8 +85,9 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
       const target = templatesList.find((t) => t.number === num);
       if (target) {
         setTemplateConfig(target.config);
-        if (target.coordinates && setConfig) {
-          setConfig(target.coordinates);
+        const targetCoords = target.coordinates || loadTemplateCoordinates(num);
+        if (targetCoords && setConfig) {
+          setConfig(targetCoords);
         }
       }
     }
@@ -675,6 +681,74 @@ export const CustomTemplateModal: React.FC<CustomTemplateModalProps> = ({
                   >
                     <Layers className="w-3.5 h-3.5" />
                     <span>{templateConfig.showBuiltinGuilloche ? 'Guilloche Overlay ON' : 'Guilloche Overlay OFF'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Save Blanks & Field Positions Together Bar */}
+              <div className="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold text-emerald-200 flex items-center gap-1.5">
+                    <Save className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Save Template Blanks & Field Positions Together</span>
+                  </div>
+                  <div className="text-[11px] text-emerald-300/80 mt-0.5">
+                    Link these background images and your current field positions to a template slot so they always load together.
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-300">Save to:</span>
+                  <select
+                    id="saveToSlotSelect"
+                    defaultValue={activeNum}
+                    className="bg-slate-900 border border-emerald-500/40 rounded-lg px-2.5 py-1 text-xs font-bold text-white outline-none cursor-pointer"
+                  >
+                    {templatesList.map((t) => (
+                      <option key={t.number} value={t.number}>
+                        Template #{t.number} ({t.name})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const selectEl = document.getElementById('saveToSlotSelect') as HTMLSelectElement;
+                      const slotNum = selectEl ? parseInt(selectEl.value, 10) : activeNum;
+                      const existing = templatesList.find((t) => t.number === slotNum);
+                      const coordsToSave = config
+                        ? JSON.parse(JSON.stringify(config))
+                        : existing?.coordinates || loadTemplateCoordinates(slotNum) || DEFAULT_COORDINATES;
+
+                      const updatedItem: NumberedTemplate = {
+                        number: slotNum,
+                        id: existing?.id || `template_slot_${slotNum}`,
+                        name: existing?.name || `Template #${slotNum}`,
+                        description: existing?.description || 'Custom card blank and calibrated field positions',
+                        themeColor: existing?.themeColor || '#059669',
+                        badge: `Template #${slotNum}`,
+                        frontImageUrl: templateConfig.frontImageUrl || existing?.frontImageUrl || '',
+                        backImageUrl: templateConfig.backImageUrl || existing?.backImageUrl || '',
+                        frontFileName: templateConfig.frontFileName || existing?.frontFileName || '',
+                        backFileName: templateConfig.backFileName || existing?.backFileName || '',
+                        config: { ...templateConfig },
+                        coordinates: coordsToSave,
+                        createdAt: existing?.createdAt || new Date().toISOString(),
+                        updatedAt: new Date().toISOString(),
+                      };
+
+                      saveTemplateCoordinates(slotNum, coordsToSave);
+                      const updatedList = saveTemplateByNumber(updatedItem);
+                      handleUpdateTemplates(updatedList);
+                      handleSelectTemplateNumber(slotNum);
+                      try {
+                        confetti({ particleCount: 50, spread: 60 });
+                      } catch {}
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1 rounded-lg flex items-center gap-1.5 shadow-md cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Save & Link Positions</span>
                   </button>
                 </div>
               </div>

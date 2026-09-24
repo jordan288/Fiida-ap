@@ -414,8 +414,10 @@ export function formatCardDualDate(
 }
 
 /**
- * Formats a serial number into a clean number/code with NO "SN :" prefix.
- * E.g., "SN : 9482019" -> "9482019", "SN: 74928" -> "0074928", empty -> "7492815"
+ * Formats a serial number strictly into a clean 7-digit code with NO "SN :" prefix.
+ * If input has more than 7 digits, it takes the last 7 digits.
+ * If input has fewer than 7 digits, it left-pads with zeros to make exactly 7 digits.
+ * E.g., "SN : 9482019482" -> "2019482", "SN: 74928" -> "0074928", "9482019" -> "9482019", empty -> "7492815"
  */
 export function format7DigitSerial(rawSerial?: string): string {
   if (!rawSerial) return '7492815';
@@ -423,12 +425,12 @@ export function format7DigitSerial(rawSerial?: string): string {
   const clean = rawSerial.replace(/^(?:SN|Serial\s*(?:Number|No)?|ተከታታይ\s*(?:ቁጥር)?)[\s:|\-\/]+/i, '').trim();
   const digits = clean.replace(/\D/g, '');
   if (digits.length >= 7) {
-    return digits;
+    return digits.slice(-7);
   }
   if (digits.length > 0) {
     return digits.padStart(7, '0');
   }
-  return clean || '7492815';
+  return clean.slice(-7) || '7492815';
 }
 
 export interface TodayIssueDates {

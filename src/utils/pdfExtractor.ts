@@ -799,14 +799,20 @@ export async function extractFromPdf(
   const numPages = pdf.numPages;
   const allLines: string[] = [];
 
-  // High-DPI resolution scale: 2.5x for batch, 3.5x for maximum single card fidelity (300+ DPI razor sharp)
-  const targetScale = options?.scale ?? (options?.fastBatch ? 2.5 : 3.5);
+  // Ignore speed optimizations: Force true 300+ DPI extraction every time (~4.1667x)
+  const targetScale = 4.1667;
+  
   const page1 = await pdf.getPage(1);
   const viewport = page1.getViewport({ scale: targetScale });
   const canvas = document.createElement('canvas');
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  if (ctx) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+  }
 
   options?.onProgress?.('Rendering slip canvas & text...', 25);
 
@@ -1031,7 +1037,7 @@ export async function extractFromPdf(
       return undefined;
     })(),
 
-    // 4. Back FAN / FIN cut layer direct crop from raw canvas (300-600 DPI, lossless PNG, zero compression loss)
+    // 4. Back FAN / FIN cut layer direct crop from raw canvas
     (async () => {
       try {
         const effectiveRegs = getEffectiveRegions();
@@ -1042,13 +1048,13 @@ export async function extractFromPdf(
           height: 4.5,
         };
         const cropUrl = await cropHighQualityFanLayer(effectiveCanvas, finReg, {
-          colorMode: 'original',
+          colorMode: 'enhanced',
           superSampleFactor: 1.0,
           targetMinHeight: 0,
-          sharpen: false,
-          smoothText: false,
-          denoise: false,
-          noUpscale: true,
+          sharpen: true,        // Restores crisp edges to the authentic text
+          smoothText: true,
+          denoise: true,
+          noUpscale: true,      // 1:1 direct crop as-is without artificial upscaling
         });
         return cropUrl || undefined;
       } catch (err) {
@@ -1075,13 +1081,15 @@ export async function extractFromPdf(
     for (let p = 2; p <= Math.min(numPages, 3); p++) {
       try {
         const nextPage = await pdf.getPage(p);
-        const nextVp = nextPage.getViewport({ scale: 2.0 });
+        const nextVp = nextPage.getViewport({ scale: targetScale });
         const nextCanvas = document.createElement('canvas');
         nextCanvas.width = nextVp.width;
         nextCanvas.height = nextVp.height;
         const nextCtx = nextCanvas.getContext('2d', { willReadFrequently: true });
         
         if (nextCtx) {
+          nextCtx.imageSmoothingEnabled = true;
+          nextCtx.imageSmoothingQuality = 'high';
           await nextPage.render({ canvasContext: nextCtx as any, viewport: nextVp }).promise;
 
           if (!extractedQrUrl) {
@@ -1245,8 +1253,8 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
       img.onload = async () => {
         const origW = img.naturalWidth || img.width;
         const origH = img.naturalHeight || img.height;
-        // Cap excessive image dimensions to 1800px max for super-fast processing with full fidelity
-        const maxDim = 1800;
+        // Cap excessive image dimensions to 3000px max for full high-res fidelity
+        const maxDim = 3000;
         const scale = Math.min(1, maxDim / Math.max(origW, origH));
         const finalW = Math.round(origW * scale);
         const finalH = Math.round(origH * scale);
@@ -1256,6 +1264,8 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
         canvas.height = finalH;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(img, 0, 0, finalW, finalH);
         }
 
@@ -1264,7 +1274,7 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
         const effectiveCanvas = orientationDetection.canvas;
 
         // Store high-quality canvas image for preview and region extraction
-        const pageCanvasUrl = effectiveCanvas.toDataURL('image/jpeg', 0.94);
+        const pageCanvasUrl = effectiveCanvas.toDataURL('image/jpeg', 1.0);
 
         // CONCURRENT EXTRACTION: Run QR detection, Photo detection, 1D Barcode crop, and Back FAN cut simultaneously
         const [qrResult, photoResult, barcodeResult, finResult] = await Promise.all([
@@ -1364,7 +1374,7 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
             return undefined;
           })(),
 
-          // 4. Back FAN / FIN cut layer direct crop from raw canvas (300-600 DPI, lossless)
+          // 4. Back FAN / FIN cut layer direct crop from raw canvas
           (async () => {
             if (!ctx) return undefined;
             try {
@@ -1377,11 +1387,12 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
               };
               const cropUrl = await cropHighQualityFanLayer(effectiveCanvas, finReg, {
                 colorMode: 'enhanced',
-                superSampleFactor: 2.5,
-                targetMinHeight: 180,
-                sharpen: true,
+                superSampleFactor: 1.0,
+                targetMinHeight: 0,
+                sharpen: true,        // Restores crisp edges to the authentic text
                 smoothText: true,
                 denoise: true,
+                noUpscale: true,      // 1:1 direct crop as-is without artificial upscaling
               });
               return cropUrl || undefined;
             } catch (err) {

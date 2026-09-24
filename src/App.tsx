@@ -90,6 +90,11 @@ export default function App() {
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>(INITIAL_BATCH_QUEUE);
   const [activeQueueIndex, setActiveQueueIndex] = useState<number>(0);
 
+  // Switching ref to prevent useEffect race condition when changing templates
+  const isSwitchingTemplateRef = React.useRef(false);
+  const activeTemplateNumberRef = React.useRef(activeTemplateNumber);
+  activeTemplateNumberRef.current = activeTemplateNumber;
+
   // Automatically hydrate full templates & high-res images from IndexedDB on startup
   React.useEffect(() => {
     let isMounted = true;
@@ -115,28 +120,37 @@ export default function App() {
 
   // Automatically make coordinate settings permanent and tied to active template
   React.useEffect(() => {
+    if (isSwitchingTemplateRef.current) return;
+    const currentNum = activeTemplateNumberRef.current;
+
     try {
       localStorage.setItem(STORAGE_KEY_COORDS, JSON.stringify(config));
-      saveTemplateCoordinates(activeTemplateNumber, config);
+      saveTemplateCoordinates(currentNum, config);
     } catch {}
 
     setNumberedTemplates((prev) => {
-      const idx = prev.findIndex((t) => t.number === activeTemplateNumber);
+      const idx = prev.findIndex((t) => t.number === currentNum);
       if (idx < 0) return prev;
-      if (prev[idx].coordinates === config) return prev;
+      const existing = prev[idx].coordinates;
+      if (existing && JSON.stringify(existing) === JSON.stringify(config)) {
+        return prev;
+      }
       const updated = [...prev];
       updated[idx] = {
         ...updated[idx],
-        coordinates: config,
+        coordinates: JSON.parse(JSON.stringify(config)),
         updatedAt: new Date().toISOString(),
       };
       saveNumberedTemplates(updated);
       return updated;
     });
-  }, [config, activeTemplateNumber]);
+  }, [config]);
 
   // Keep active template settings and active numbered template permanently synced
   React.useEffect(() => {
+    if (isSwitchingTemplateRef.current) return;
+    const currentNum = activeTemplateNumberRef.current;
+
     try {
       // Keep STORAGE_KEY_TEMPLATE lightweight - if images are large, strip dataUrl from this secondary key
       const safeConfig = { ...templateConfig };
@@ -150,40 +164,85 @@ export default function App() {
     } catch {}
 
     setNumberedTemplates((prev) =>
-      syncActiveTemplateConfig(activeTemplateNumber, templateConfig, prev)
+      syncActiveTemplateConfig(currentNum, templateConfig, prev)
     );
-  }, [templateConfig, activeTemplateNumber]);
+  }, [templateConfig]);
 
   const handleSelectTemplateNumber = (num: number) => {
-    // 1. Permanently preserve current template coordinates
-    saveTemplateCoordinates(activeTemplateNumber, config);
+    const fromNum = activeTemplateNumberRef.current;
+    if (fromNum === num) return;
 
-    // 2. Set new active template number
+    // 1. Mark template switching in progress to block accidental useEffect overwrites
+    isSwitchingTemplateRef.current = true;
+
+    // 2. Permanently save the leaving template's coordinates & config
+    const leavingCoordsCloned = JSON.parse(JSON.stringify(config));
+    saveTemplateCoordinates(fromNum, leavingCoordsCloned);
+
+    // 3. Find the target template and load its coordinates & config
+    const currentList = numberedTemplates && numberedTemplates.length > 0 ? numberedTemplates : loadNumberedTemplates();
+    const target = currentList.find((t) => t.number === num);
+
+    // Target coordinates: check template object first, then template-specific storage, then DEFAULT_COORDINATES
+    const targetCoordsFromStorage = loadTemplateCoordinates(num);
+    const targetCoords = (target?.coordinates && target.coordinates.fields)
+      ? target.coordinates
+      : ((targetCoordsFromStorage && targetCoordsFromStorage.fields)
+          ? targetCoordsFromStorage
+          : JSON.parse(JSON.stringify(DEFAULT_COORDINATES)));
+    const clonedTargetCoords = JSON.parse(JSON.stringify(targetCoords));
+
+    const targetConfig = target?.config
+      ? JSON.parse(JSON.stringify(target.config))
+      : JSON.parse(JSON.stringify(DEFAULT_TEMPLATE_CONFIG));
+
+    // 4. Update numberedTemplates state so both the leaving and incoming templates have their accurate data
+    const updatedList = currentList.map((t) => {
+      if (t.number === fromNum) {
+        return {
+          ...t,
+          config: { ...templateConfig },
+          coordinates: leavingCoordsCloned,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      if (t.number === num) {
+        return {
+          ...t,
+          config: targetConfig,
+          coordinates: clonedTargetCoords,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return t;
+    });
+
+    setNumberedTemplates(updatedList);
+    saveNumberedTemplates(updatedList);
+
+    // 5. Update active template number
     setActiveTemplateNumber(num);
     setActiveTemplateNumberState(num);
 
-    // 3. Switch both template settings and coordinates to selected template
-    const target = numberedTemplates.find((t) => t.number === num);
-    if (target) {
-      // Switch visual settings
-      setTemplateConfig(target.config);
+    // 6. Atomically switch visual settings AND coordinates to the selected template
+    setTemplateConfig(targetConfig);
+    setConfig(clonedTargetCoords);
 
-      // Switch positions to this template's saved positions!
-      const targetCoords = target.coordinates || loadTemplateCoordinates(num);
-      setConfig(targetCoords);
+    try {
+      const safeTargetConfig = { ...targetConfig };
+      if (safeTargetConfig.frontImageUrl && safeTargetConfig.frontImageUrl.length > 5000) {
+        safeTargetConfig.frontImageUrl = '';
+      }
+      if (safeTargetConfig.backImageUrl && safeTargetConfig.backImageUrl.length > 5000) {
+        safeTargetConfig.backImageUrl = '';
+      }
+      localStorage.setItem(STORAGE_KEY_TEMPLATE, JSON.stringify(safeTargetConfig));
+      localStorage.setItem(STORAGE_KEY_COORDS, JSON.stringify(clonedTargetCoords));
+    } catch {}
 
-      try {
-        const safeTargetConfig = { ...target.config };
-        if (safeTargetConfig.frontImageUrl && safeTargetConfig.frontImageUrl.length > 5000) {
-          safeTargetConfig.frontImageUrl = '';
-        }
-        if (safeTargetConfig.backImageUrl && safeTargetConfig.backImageUrl.length > 5000) {
-          safeTargetConfig.backImageUrl = '';
-        }
-        localStorage.setItem(STORAGE_KEY_TEMPLATE, JSON.stringify(safeTargetConfig));
-        localStorage.setItem(STORAGE_KEY_COORDS, JSON.stringify(targetCoords));
-      } catch {}
-    }
+    setTimeout(() => {
+      isSwitchingTemplateRef.current = false;
+    }, 120);
   };
 
   const handleUpdateNumberedTemplates = (updated: NumberedTemplate[]) => {

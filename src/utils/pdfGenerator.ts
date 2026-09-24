@@ -33,6 +33,7 @@ export async function mirrorImageDataUrl(dataUrl: string): Promise<string> {
     img.onload = () => {
       try {
         const canvas = document.createElement('canvas');
+        // Retain exact massive pixel dimensions during mirror
         canvas.width = img.naturalWidth || img.width;
         canvas.height = img.naturalHeight || img.height;
         const ctx = canvas.getContext('2d');
@@ -60,7 +61,9 @@ export async function captureCardImage(
   element: HTMLElement,
   dpi: 300 | 600 = 300
 ): Promise<string> {
-  const pixelRatio = dpi === 600 ? 3 : 2; // High-DPI supersampling
+  // CRITICAL FIX: Standard displays are 96 DPI. 
+  // Multiplier of 4 forces 384+ DPI. Multiplier of 6 forces ~600+ DPI.
+  const pixelRatio = dpi === 600 ? 6 : 4; 
   
   const dataUrl = await toPng(element, {
     quality: 1.0,
@@ -85,7 +88,8 @@ export async function captureCardJpeg(
   dpi: 300 | 600 = 300,
   quality: number = 0.98
 ): Promise<string> {
-  const pixelRatio = dpi === 600 ? 3 : 2;
+  // CRITICAL FIX: Massive resolution boost
+  const pixelRatio = dpi === 600 ? 6 : 4;
   
   const dataUrl = await toJpeg(element, {
     quality: quality,
@@ -175,28 +179,38 @@ export async function generateAndDownloadIdJpeg(
   onProgress?.('Composing Combined High-Res ID Print Sheet...', 75);
 
   const canvas = document.createElement('canvas');
-  const scale = options.resolutionDpi === 600 ? 3 : 2;
-  const cardW = 1012 * (scale / 2);
-  const cardH = 638 * (scale / 2);
+  
+  // Apply logical scaling trick: Keep coordinate math simple, but multiply physical canvas pixels
+  const pixelRatio = options.resolutionDpi === 600 ? 6 : 4;
+  const cardW = 1012; 
+  const cardH = 638;
 
-  // Side-by-side with nice margin and header
+  // Side-by-side with nice margin and header (Logical Units)
   const margin = 80;
   const headerH = options.includeMetadataHeader !== false ? 160 : 60;
   const footerH = 100;
-  canvas.width = cardW * 2 + margin * 3;
-  canvas.height = cardH + headerH + footerH + margin * 2;
+  
+  const logicalWidth = cardW * 2 + margin * 3;
+  const logicalHeight = cardH + headerH + footerH + margin * 2;
+
+  // Set massive physical dimensions
+  canvas.width = logicalWidth * pixelRatio;
+  canvas.height = logicalHeight * pixelRatio;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not create canvas 2D context');
 
+  // Scale the context so everything draws at high-res automatically
+  ctx.scale(pixelRatio, pixelRatio);
+
   // Background
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, logicalWidth, logicalHeight);
 
   // Header Banner
   if (options.includeMetadataHeader !== false) {
     ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, canvas.width, 100);
+    ctx.fillRect(0, 0, logicalWidth, 100);
 
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 32px sans-serif';
@@ -204,11 +218,11 @@ export async function generateAndDownloadIdJpeg(
     const headerTitle = shouldMirror 
       ? 'FEDERAL DEMOCRATIC REPUBLIC OF ETHIOPIA — NATIONAL DIGITAL ID (FAYDA) [MIRROR PRINT]'
       : 'FEDERAL DEMOCRATIC REPUBLIC OF ETHIOPIA — NATIONAL DIGITAL ID (FAYDA)';
-    ctx.fillText(headerTitle, canvas.width / 2, 45);
+    ctx.fillText(headerTitle, logicalWidth / 2, 45);
 
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '20px sans-serif';
-    ctx.fillText(`Applicant: ${idData.fullNameEnglish} (${idData.fullNameAmharic}) | FAN: ${idData.fan} | 300 DPI CR80 Print Standard${shouldMirror ? ' • Mirrored for PVC Transfer' : ''}`, canvas.width / 2, 80);
+    ctx.fillText(`Applicant: ${idData.fullNameEnglish} (${idData.fullNameAmharic}) | FAN: ${idData.fan} | 300 DPI CR80 Print Standard${shouldMirror ? ' • Mirrored for PVC Transfer' : ''}`, logicalWidth / 2, 80);
   }
 
   // Load images onto canvas
@@ -226,12 +240,16 @@ export async function generateAndDownloadIdJpeg(
     }),
   ]);
 
-  const frontX = margin;
+  // Dynamic X Coordinates: Swap Left and Right if Mirrored
+  const leftX = margin;
+  const rightX = margin * 2 + cardW;
+
+  const frontX = shouldMirror ? rightX : leftX;
+  const backX = shouldMirror ? leftX : rightX;
   const frontY = headerH + margin;
-  const backX = margin * 2 + cardW;
   const backY = headerH + margin;
 
-  // Draw Front & Back
+  // Draw Front & Back (Context scaling preserves the 4K crispness)
   ctx.drawImage(imgFront, frontX, frontY, cardW, cardH);
   ctx.drawImage(imgBack, backX, backY, cardW, cardH);
 
@@ -241,7 +259,7 @@ export async function generateAndDownloadIdJpeg(
   ctx.strokeRect(frontX, frontY, cardW, cardH);
   ctx.strokeRect(backX, backY, cardW, cardH);
 
-  // Labels
+  // Labels (Anchored to dynamic coordinates)
   ctx.fillStyle = '#475569';
   ctx.font = 'bold 22px sans-serif';
   ctx.textAlign = 'left';
@@ -252,9 +270,9 @@ export async function generateAndDownloadIdJpeg(
   ctx.fillStyle = '#94a3b8';
   ctx.font = '18px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(`Fayda ID System • Generated at 300 DPI • Standard PVC Ready${shouldMirror ? ' • Mirrored for Inkjet PVC / Transfer Sheet' : ''} • Serial: ${idData.serialNumber || 'FAYDA-CERT-2024'}`, canvas.width / 2, canvas.height - 35);
+  ctx.fillText(`Fayda ID System • Generated at ${options.resolutionDpi} DPI • Standard PVC Ready${shouldMirror ? ' • Mirrored for Inkjet PVC / Transfer Sheet' : ''} • Serial: ${idData.serialNumber || 'FAYDA-CERT-2024'}`, logicalWidth / 2, logicalHeight - 35);
 
-  onProgress?.('Saving JPEG File...', 90);
+  onProgress?.('Saving High-Res JPEG File...', 90);
   const combinedDataUrl = canvas.toDataURL('image/jpeg', options.quality || 0.98);
   downloadDataUrl(combinedDataUrl, `${baseFileName}_Complete_ID_Sheet_300DPI.jpg`);
   onProgress?.('Complete ID JPEG Downloaded!', 100);
@@ -428,7 +446,7 @@ export async function generateAndDownloadIdPdf(
     doc.text('1. Paper Size: Standard ISO A4 (210 × 297 mm). In print dialog, set Scale to exactly 100% / "Actual Size" (DO NOT scale to fit).', 18, footerY + 13);
     doc.text('2. For Direct PVC Card Printers (Zebra, Fargo, Evolis, Magicard): Use the "Direct CR80 Dual-Page" format for borderless badge printing.', 18, footerY + 18);
     doc.text('3. Lamination: For paper/teslin badge stock, cut along crop marks and laminate using standard 54 × 86 mm 5-mil or 7-mil pouches.', 18, footerY + 23);
-    doc.text(`4. Calibrated Resolution: 300 DPI | Generated with Custom Coordinates Map (${config.canvasWidth}×${config.canvasHeight} px).`, 18, footerY + 28);
+    doc.text(`4. Calibrated Resolution: ${options.resolutionDpi} DPI | Generated with Custom Coordinates Map (${config.canvasWidth}×${config.canvasHeight} px).`, 18, footerY + 28);
 
     doc.save(`${fileName}_A4_PrintSheet.pdf`);
   }

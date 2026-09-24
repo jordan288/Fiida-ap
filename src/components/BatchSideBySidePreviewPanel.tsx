@@ -67,17 +67,24 @@ export const BatchSideBySidePreviewPanel: React.FC<BatchSideBySidePreviewPanelPr
   onApplyStudioPositionsToAllTemplates,
   onUpdateQueueItemPhotos,
 }) => {
+  // Active template metadata
+  const currentTemplate = numberedTemplates.find((t) => t.number === activeTemplateNumber);
+  const effectiveTemplateConfig = currentTemplate?.config || templateConfig;
+  const templateName = currentTemplate?.name || `Custom Template #${activeTemplateNumber}`;
+
   // Working coordinates for real-time live manipulation
   const [workingCoords, setWorkingCoords] = useState<CoordinatesConfig>(() => {
-    return JSON.parse(JSON.stringify(initialConfig || DEFAULT_COORDINATES));
+    const tplCoords = currentTemplate?.coordinates || loadTemplateCoordinates(activeTemplateNumber) || initialConfig;
+    return JSON.parse(JSON.stringify(tplCoords || DEFAULT_COORDINATES));
   });
 
   // Sync workingCoords when initialConfig or activeTemplateNumber changes externally
   useEffect(() => {
-    if (initialConfig) {
-      setWorkingCoords(JSON.parse(JSON.stringify(initialConfig)));
+    const tplCoords = currentTemplate?.coordinates || loadTemplateCoordinates(activeTemplateNumber) || initialConfig;
+    if (tplCoords) {
+      setWorkingCoords(JSON.parse(JSON.stringify(tplCoords)));
     }
-  }, [initialConfig, activeTemplateNumber]);
+  }, [initialConfig, activeTemplateNumber, currentTemplate?.coordinates]);
 
   // Selected applicant source for live preview
   const [sampleApplicantSource, setSampleApplicantSource] = useState<'male' | 'female' | 'queue'>('queue');
@@ -173,10 +180,6 @@ export const BatchSideBySidePreviewPanel: React.FC<BatchSideBySidePreviewPanelPr
       setIsCuttingBothBg(false);
     }
   };
-
-  // Active template metadata
-  const currentTemplate = numberedTemplates.find((t) => t.number === activeTemplateNumber);
-  const templateName = currentTemplate?.name || `Custom Template #${activeTemplateNumber}`;
 
   // Field definitions
   const fieldList = [
@@ -744,7 +747,7 @@ export const BatchSideBySidePreviewPanel: React.FC<BatchSideBySidePreviewPanelPr
                 side="front"
                 data={activeApplicantData}
                 config={workingCoords}
-                templateConfig={templateConfig}
+                templateConfig={effectiveTemplateConfig}
                 scale={previewScale}
                 highlightField={selectedFieldId}
                 onSelectField={(id) => setSelectedFieldId(id)}
@@ -776,7 +779,7 @@ export const BatchSideBySidePreviewPanel: React.FC<BatchSideBySidePreviewPanelPr
                 side="back"
                 data={activeApplicantData}
                 config={workingCoords}
-                templateConfig={templateConfig}
+                templateConfig={effectiveTemplateConfig}
                 scale={previewScale}
                 highlightField={selectedFieldId}
                 onSelectField={(id) => setSelectedFieldId(id)}

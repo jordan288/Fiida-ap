@@ -3883,10 +3883,10 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    maxLength={12}
+                    maxLength={7}
                     value={idData.serialNumber || ''}
                     onChange={(e) => {
-                      const val = e.target.value.replace(/^(?:SN|Serial\s*(?:Number|No)?)[\s:|\-\/]*/i, '').replace(/[^0-9]/g, '');
+                      const val = e.target.value.replace(/^(?:SN|Serial\s*(?:Number|No)?)[\s:|\-\/]*/i, '').replace(/[^0-9]/g, '').slice(0, 7);
                       setIdData((prev) => ({ ...prev, serialNumber: val }));
                     }}
                     onFocus={() => setSelectedFieldId('serialNumber')}

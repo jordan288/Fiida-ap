@@ -54,7 +54,7 @@ import {
 import { BatchQueueItem, CoordinatesConfig, IdCardData, TemplateConfig, NumberedTemplate } from '../types';
 import { SAMPLE_BATCH_APPLICANTS, SAMPLE_ID_DATA, SAMPLE_FEMALE_DATA } from '../data/defaultData';
 import { exportBatchToA4Pdf, exportBatchToA4Png, exportBatchToZipArchive, renderOffscreenCard } from '../utils/batchExporter';
-import { saveTemplateCoordinates } from '../utils/templateStorage';
+import { saveTemplateCoordinates, loadTemplateCoordinates } from '../utils/templateStorage';
 import { convertGcToEth, convertEthToGc, getTodayIssueDates, calculateExpiryFromIssue, formatCardDualDate, formatGcyyyyMmDd, formatGcWith3LetterMonth, format7DigitSerial } from '../utils/ethiopianCalendar';
 import { extractFromPdf, extractFromImage } from '../utils/pdfExtractor';
 import { getEffectiveRegions, extractAllFromMarkedRegions, savePermanentRegions, loadPermanentRegions } from '../utils/pdfRegionExtractor';
@@ -497,9 +497,18 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
     targetItemId?: string
   ) => {
     if (scope === 'all') {
-      setConfig?.(newConfig);
+      const cloned = JSON.parse(JSON.stringify(newConfig));
+      setConfig?.(cloned);
       if (activeTemplateNumber) {
-        saveTemplateCoordinates(activeTemplateNumber, newConfig);
+        saveTemplateCoordinates(activeTemplateNumber, cloned);
+        if (numberedTemplates && onUpdateNumberedTemplates) {
+          const updated = numberedTemplates.map((t) =>
+            t.number === activeTemplateNumber
+              ? { ...t, coordinates: cloned, updatedAt: new Date().toISOString() }
+              : t
+          );
+          onUpdateNumberedTemplates(updated);
+        }
       }
     } else if (scope === 'item' && targetItemId) {
       setQueue((prev) =>
@@ -2935,14 +2944,26 @@ export const BatchProcessor: React.FC<BatchProcessorProps> = ({
             {/* Card Visual Stage */}
             <div className="bg-slate-950/60 rounded-2xl border border-slate-800/80 p-6 flex items-center justify-center min-h-[380px] overflow-auto">
               <div style={{ transform: `scale(${previewScale})`, transformOrigin: 'center center', transition: 'transform 0.2s' }}>
-                <CardRenderer
-                  side={previewSide}
-                  data={previewItem.extractedData}
-                  config={previewItem.customCoordinates || config}
-                  templateConfig={templateConfig}
-                  photoColorMode={previewItem.photoColorMode || batchPhotoColorMode}
-                  showCornerMarks={templateConfig.showCornerMarks}
-                />
+                {(() => {
+                  const itemTplNum = previewItem.templateNumber || activeTemplateNumber || 1;
+                  const itemTpl = numberedTemplates?.find((t) => t.number === itemTplNum);
+                  const effectiveTplConfig = itemTpl?.config || templateConfig;
+                  const effectiveCoords =
+                    previewItem.customCoordinates ||
+                    itemTpl?.coordinates ||
+                    loadTemplateCoordinates(itemTplNum) ||
+                    config;
+                  return (
+                    <CardRenderer
+                      side={previewSide}
+                      data={previewItem.extractedData}
+                      config={effectiveCoords}
+                      templateConfig={effectiveTplConfig}
+                      photoColorMode={previewItem.photoColorMode || batchPhotoColorMode}
+                      showCornerMarks={effectiveTplConfig.showCornerMarks}
+                    />
+                  );
+                })()}
               </div>
             </div>
 

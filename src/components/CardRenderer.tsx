@@ -79,7 +79,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
   }, [data.qrCodeImageUrl]);
 
   useEffect(() => {
-    // If the exact cropped QR code from the PDF document is available, do not generate one
     if (data.qrCodeImageUrl) {
       return;
     }
@@ -93,7 +92,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
           width: 600,
           color: {
             dark: '#000000',
-            light: '#00000000', // completely transparent background - zero white border
+            light: '#00000000',
           },
         });
         setQrDataUrl(url);
@@ -106,7 +105,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 
   const { canvasWidth, canvasHeight, fields, media } = config;
 
-  // Setup Dragging Listeners
   const handlePointerDown = (
     e: React.PointerEvent,
     fieldId: string,
@@ -129,7 +127,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
     const cardRect = cardContainerRef.current?.getBoundingClientRect();
     if (!cardRect) return;
 
-    // Calculate initial offset inside the element
     const pointerCardX = (e.clientX - cardRect.left) / scale;
     const pointerCardY = (e.clientY - cardRect.top) / scale;
 
@@ -163,7 +160,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
     window.addEventListener('pointerup', handlePointerUp);
   };
 
-  // Setup Resizing / Stretching Listeners
   const handleResizePointerDown = (
     e: React.PointerEvent,
     fieldId: string,
@@ -232,7 +228,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
         backgroundColor: bgColor,
       }}
     >
-      {/* Base Card Surface scaled container */}
       <div
         ref={cardContainerRef}
         className="absolute inset-0"
@@ -244,7 +239,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
           backgroundColor: bgColor,
         }}
       >
-        {/* Custom Template Uploaded Image Layer */}
         {hasCustomBg ? (
           <div 
             className="absolute inset-0 pointer-events-none z-0 overflow-hidden"
@@ -263,7 +257,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
             />
           </div>
         ) : !isExporting ? (
-          /* Subtle blank canvas guide when no custom template is uploaded */
           <div className="absolute inset-0 pointer-events-none z-0 flex items-center justify-center opacity-20 border-2 border-dashed border-emerald-800 m-2 rounded-xl">
             <span className="text-xs font-mono font-bold text-emerald-950 uppercase tracking-wider">
               [ Custom Template {side === 'front' ? 'Front' : 'Back'} Blank Canvas ]
@@ -271,7 +264,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
           </div>
         ) : null}
 
-        {/* Security & Calibration Coordinate Grid Overlay */}
         {showGrid && !isExporting && (
           <svg className="absolute inset-0 w-full h-full pointer-events-none z-10 opacity-35" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -284,13 +276,11 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </pattern>
             </defs>
             <rect width="100%" height="100%" fill="url(#mainGrid)" />
-            {/* Center Crosshairs */}
             <line x1={canvasWidth / 2} y1="0" x2={canvasWidth / 2} y2={canvasHeight} stroke="#dc2626" strokeWidth="1" strokeDasharray="4,4" />
             <line x1="0" y1={canvasHeight / 2} x2={canvasWidth} y2={canvasHeight / 2} stroke="#dc2626" strokeWidth="1" strokeDasharray="4,4" />
           </svg>
         )}
 
-        {/* Template Corner Calibration & Registration Marks (Position Correction) */}
         {isCornerMarksActive && (
           <svg
             className="absolute inset-0 w-full h-full pointer-events-none z-30 overflow-visible select-none"
@@ -303,7 +293,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </filter>
             </defs>
 
-            {/* Template Perimeter Registration Guide Border */}
             <rect
               x="0.75"
               y="0.75"
@@ -316,23 +305,16 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               strokeOpacity="0.65"
             />
 
-            {/* 1. TOP-LEFT CORNER (0, 0) */}
             <g id="corner-tl">
-              {/* Outer Contrast Frame */}
               <path d="M 0,38 L 0,0 L 38,0" fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
-              {/* Inner Precision Emerald Arm */}
               <path d="M 0,38 L 0,0 L 38,0" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
-              {/* Distance offset ticks (12px, 24px) */}
               <line x1="12" y1="0" x2="12" y2="7" stroke="#10b981" strokeWidth="1.5" />
               <line x1="24" y1="0" x2="24" y2="7" stroke="#10b981" strokeWidth="1.5" />
               <line x1="0" y1="12" x2="7" y2="12" stroke="#10b981" strokeWidth="1.5" />
               <line x1="0" y1="24" x2="7" y2="24" stroke="#10b981" strokeWidth="1.5" />
-              {/* 45 degree angle notch */}
               <line x1="0" y1="0" x2="14" y2="14" stroke="#059669" strokeWidth="1.5" />
-              {/* Target Dot */}
               <circle cx="0" cy="0" r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
               <circle cx="0" cy="0" r="1.8" fill="#ffffff" />
-              {/* Coordinate Chip */}
               <g transform="translate(10, 10)" filter="url(#cornerChipShadow)">
                 <rect x="0" y="0" width="76" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
                 <text x="38" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
@@ -341,23 +323,16 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </g>
             </g>
 
-            {/* 2. TOP-RIGHT CORNER (canvasWidth, 0) */}
             <g id="corner-tr">
-              {/* Outer Contrast Frame */}
               <path d={`M ${canvasWidth - 38},0 L ${canvasWidth},0 L ${canvasWidth},38`} fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
-              {/* Inner Precision Emerald Arm */}
               <path d={`M ${canvasWidth - 38},0 L ${canvasWidth},0 L ${canvasWidth},38`} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
-              {/* Distance offset ticks */}
               <line x1={canvasWidth - 12} y1="0" x2={canvasWidth - 12} y2="7" stroke="#10b981" strokeWidth="1.5" />
               <line x1={canvasWidth - 24} y1="0" x2={canvasWidth - 24} y2="7" stroke="#10b981" strokeWidth="1.5" />
               <line x1={canvasWidth} y1="12" x2={canvasWidth - 7} y2="12" stroke="#10b981" strokeWidth="1.5" />
               <line x1={canvasWidth} y1="24" x2={canvasWidth - 7} y2="24" stroke="#10b981" strokeWidth="1.5" />
-              {/* 45 degree angle notch */}
               <line x1={canvasWidth} y1="0" x2={canvasWidth - 14} y2="14" stroke="#059669" strokeWidth="1.5" />
-              {/* Target Dot */}
               <circle cx={canvasWidth} cy="0" r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
               <circle cx={canvasWidth} cy="0" r="1.8" fill="#ffffff" />
-              {/* Coordinate Chip */}
               <g transform={`translate(${canvasWidth - 105}, 10)`} filter="url(#cornerChipShadow)">
                 <rect x="0" y="0" width="95" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
                 <text x="47.5" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
@@ -366,23 +341,16 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </g>
             </g>
 
-            {/* 3. BOTTOM-LEFT CORNER (0, canvasHeight) */}
             <g id="corner-bl">
-              {/* Outer Contrast Frame */}
               <path d={`M 0,${canvasHeight - 38} L 0,${canvasHeight} L 38,${canvasHeight}`} fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
-              {/* Inner Precision Emerald Arm */}
               <path d={`M 0,${canvasHeight - 38} L 0,${canvasHeight} L 38,${canvasHeight}`} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
-              {/* Distance offset ticks */}
               <line x1="12" y1={canvasHeight} x2="12" y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
               <line x1="24" y1={canvasHeight} x2="24" y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
               <line x1="0" y1={canvasHeight - 12} x2="7" y2={canvasHeight - 12} stroke="#10b981" strokeWidth="1.5" />
               <line x1="0" y1={canvasHeight - 24} x2="7" y2={canvasHeight - 24} stroke="#10b981" strokeWidth="1.5" />
-              {/* 45 degree angle notch */}
               <line x1="0" y1={canvasHeight} x2="14" y2={canvasHeight - 14} stroke="#059669" strokeWidth="1.5" />
-              {/* Target Dot */}
               <circle cx="0" cy={canvasHeight} r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
               <circle cx="0" cy={canvasHeight} r="1.8" fill="#ffffff" />
-              {/* Coordinate Chip */}
               <g transform={`translate(10, ${canvasHeight - 30})`} filter="url(#cornerChipShadow)">
                 <rect x="0" y="0" width="95" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
                 <text x="47.5" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
@@ -391,23 +359,16 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </g>
             </g>
 
-            {/* 4. BOTTOM-RIGHT CORNER (canvasWidth, canvasHeight) */}
             <g id="corner-br">
-              {/* Outer Contrast Frame */}
               <path d={`M ${canvasWidth - 38},${canvasHeight} L ${canvasWidth},${canvasHeight} L ${canvasWidth},${canvasHeight - 38}`} fill="none" stroke="#020617" strokeWidth="4.5" strokeLinecap="square" />
-              {/* Inner Precision Emerald Arm */}
               <path d={`M ${canvasWidth - 38},${canvasHeight} L ${canvasWidth},${canvasHeight} L ${canvasWidth},${canvasHeight - 38}`} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="square" />
-              {/* Distance offset ticks */}
               <line x1={canvasWidth - 12} y1={canvasHeight} x2={canvasWidth - 12} y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
               <line x1={canvasWidth - 24} y1={canvasHeight} x2={canvasWidth - 24} y2={canvasHeight - 7} stroke="#10b981" strokeWidth="1.5" />
               <line x1={canvasWidth} y1={canvasHeight - 12} x2={canvasWidth - 7} y2={canvasHeight - 12} stroke="#10b981" strokeWidth="1.5" />
               <line x1={canvasWidth} y1={canvasHeight - 24} x2={canvasWidth - 7} y2={canvasHeight - 24} stroke="#10b981" strokeWidth="1.5" />
-              {/* 45 degree angle notch */}
               <line x1={canvasWidth} y1={canvasHeight} x2={canvasWidth - 14} y2={canvasHeight - 14} stroke="#059669" strokeWidth="1.5" />
-              {/* Target Dot */}
               <circle cx={canvasWidth} cy={canvasHeight} r="4.5" fill="#10b981" stroke="#020617" strokeWidth="1.2" />
               <circle cx={canvasWidth} cy={canvasHeight} r="1.8" fill="#ffffff" />
-              {/* Coordinate Chip */}
               <g transform={`translate(${canvasWidth - 120}, ${canvasHeight - 30})`} filter="url(#cornerChipShadow)">
                 <rect x="0" y="0" width="110" height="20" rx="4" fill="#090d16" fillOpacity="0.92" stroke="#10b981" strokeWidth="1" />
                 <text x="55" y="14" fill="#34d399" fontSize="10.5" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
@@ -419,10 +380,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
         )}
 
         {side === 'front' ? (
-          /* ================= FRONT SIDE ================= */
           <div className="relative w-full h-full z-10" style={{ fontFamily: cardFontFamilyCss }}>
-            {/* Dual Issue Dates (Separate Configurable Layers for G.C. & E.C. Ethiopian Calendar) */}
-            {/* Layer 1: Date of Issue (Gregorian Calendar / G.C.) */}
             <div 
               className={`absolute tracking-wider flex items-center gap-1.5 transition-all p-0 rounded-sm ${
                 (fields.dateOfIssueGc?.rotation ?? fields.dateOfIssueFront?.rotation ?? -90) === -90
@@ -466,7 +424,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Layer 2: Date of Issue (Ethiopian Calendar / E.C.) */}
             <div 
               className={`absolute tracking-wider flex items-center gap-1.5 transition-all p-0 rounded-sm ${
                 (fields.dateOfIssueEth?.rotation ?? -90) === -90
@@ -510,7 +467,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Primary Applicant Photo Container (Left) - Frameless */}
             <div
               className={`absolute overflow-hidden transition-all group bg-transparent ${
                 highlightField === 'photoFront'
@@ -550,7 +506,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 </div>
               )}
 
-              {/* Coordinate Chip Overlay */}
               {(showCoordinatesBadges || highlightField === 'photoFront' || hoveredFieldId === 'photoFront') && !isExporting && (
                 <div className="absolute top-1 left-1 bg-slate-900/90 backdrop-blur-xs text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
                   <span className="text-emerald-400">P1 X:{media.photoFront.x}</span>
@@ -559,7 +514,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Second Photo Container (Bottom Right Security Portrait) - Direct copy from larger photo, no second layer */}
             {tConfig.showSecondaryPhoto !== false && (
               <div
                 className={`absolute overflow-hidden transition-all group bg-transparent ${
@@ -611,7 +565,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   </div>
                 )}
 
-                {/* Coordinate Chip Overlay */}
                 {(showCoordinatesBadges || highlightField === 'photoFrontSecondary' || hoveredFieldId === 'photoFrontSecondary') && !isExporting && (
                   <div className="absolute top-1 left-1 bg-slate-900/90 backdrop-blur-xs text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
                     <span className="text-emerald-400">P2 X:{media.photoFrontSecondary?.x ?? 825}</span>
@@ -622,7 +575,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             )}
 
-            {/* Watermark Emblem on Right Side (Toggleable - hidden if custom template is loaded) */}
             {tConfig.showEmblem && !hasCustomBg && (
               <div className="absolute right-12 top-36 pointer-events-none opacity-20 flex flex-col items-center">
                 <svg width="220" height="220" viewBox="0 0 100 100" fill="none" stroke="#059669" strokeWidth="2">
@@ -633,9 +585,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             )}
 
-            {/* --- Front Fields Positioned Dynamically --- */}
-
-            {/* Full Name Amharic */}
             <div
               className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'fullNameAmharic'
@@ -675,7 +624,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Full Name English */}
             <div
               className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'fullNameEnglish'
@@ -715,7 +663,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Date of Birth */}
             <div
               className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'dateOfBirth' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
@@ -740,7 +687,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   X:{fields.dateOfBirth.x} Y:{fields.dateOfBirth.y}
                 </div>
               )}
-              {/* Permanently render the read text for Date of Birth (E.C. | G.C.) */}
               <div 
                 className="font-bold"
                 style={{
@@ -758,7 +704,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Sex */}
             <div
               className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'sex' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
@@ -799,7 +744,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Date of Expiry */}
             <div
               className={`absolute transition-all rounded-sm p-0 ${
                 highlightField === 'dateOfExpiry' ? 'bg-emerald-100/90 ring-3 ring-emerald-500 z-20 shadow-md' : ''
@@ -824,7 +768,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   X:{fields.dateOfExpiry.x} Y:{fields.dateOfExpiry.y}
                 </div>
               )}
-              {/* Permanently render read text for Date of Expiry (starts exactly from the issued date +8 years) */}
               <div 
                 className="font-bold"
                 style={{
@@ -844,7 +787,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Front Side: FAN Card Number (Pure Digits, No Spaces, No White Background, No Border) */}
             {(tConfig.showFrontFan || tConfig.showFanContainerBox) && (
               <div
                 className={`absolute flex items-center justify-center transition-all bg-transparent border-0 shadow-none ${
@@ -887,7 +829,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             )}
 
-            {/* Front Side: 1D Barcode (Fully Independent Position, Stretch & Dimensions Adjustability) */}
             {tConfig.showFrontBarcode !== false && (
               <div 
                 className={`absolute flex items-center justify-center transition-all ${
@@ -908,7 +849,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 onMouseEnter={() => setHoveredFieldId('frontBarcode')}
                 onMouseLeave={() => setHoveredFieldId(null)}
               >
-                {/* Inner clipped surface for barcode bars: Always prioritize the exact cutted barcode from the slip */}
                 <div
                   className="w-full h-full overflow-hidden flex items-center justify-center"
                   style={{
@@ -948,7 +888,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   )}
                 </div>
 
-                {/* Coordinates & Dimensions Badge */}
                 {(showCoordinatesBadges || highlightField === 'frontBarcode' || hoveredFieldId === 'frontBarcode') && !isExporting && (
                   <div className="absolute -top-3.5 left-1 bg-slate-900/90 backdrop-blur-xs text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
                     <span className="text-emerald-400">Barcode X:{media.frontBarcode?.x ?? 485}</span>
@@ -957,10 +896,8 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   </div>
                 )}
 
-                {/* Interactive Stretch & Contract Controls on Card (Just like Back FAN Cut) */}
                 {interactive && !isExporting && (highlightField === 'frontBarcode' || hoveredFieldId === 'frontBarcode') && (
                   <>
-                    {/* Right Edge: Horizontal Stretch & Contract Handle */}
                     <div
                       className="absolute -right-2.5 top-1/2 -translate-y-1/2 w-5 h-8 cursor-ew-resize flex items-center justify-center z-40 group"
                       title="Drag to Stretch / Contract Barcode Width (የባርኮድ የተዘረጋ ስፋት)"
@@ -984,7 +921,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                       </span>
                     </div>
 
-                    {/* Bottom Edge: Vertical Resize Handle */}
                     <div
                       className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 h-5 w-8 cursor-ns-resize flex items-center justify-center z-40 group"
                       title="Drag to Resize Barcode Height"
@@ -1008,7 +944,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                       </span>
                     </div>
 
-                    {/* Bottom-Right Corner: Diagonal Stretch Handle */}
                     <div
                       className="absolute -right-2 -bottom-2 w-5 h-5 cursor-nwse-resize bg-emerald-600 hover:bg-emerald-500 rounded-br-lg rounded-tl-sm border-2 border-white shadow-md flex items-center justify-center text-white text-[10px] font-bold z-50 transition-transform hover:scale-110"
                       title="Drag to Stretch Barcode Width & Height"
@@ -1027,7 +962,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                       ⤡
                     </div>
 
-                    {/* Floating Mini Stretch Quick-Toolbar */}
                     <div 
                       className="absolute -top-7.5 left-0 flex items-center gap-1.5 bg-slate-900/95 text-white px-2 py-0.5 rounded-md shadow-lg border border-slate-700/80 z-50 text-[10px] font-mono pointer-events-auto"
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1058,9 +992,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
             )}
           </div>
         ) : (
-          /* ================= BACK SIDE ================= */
           <div className="relative w-full h-full z-10" style={{ fontFamily: cardFontFamilyCss }}>
-            {/* Top Left: Phone Number */}
             <div
               id="field-phoneNumber"
               className={`absolute transition-all rounded-sm p-0 ${
@@ -1098,7 +1030,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Middle Left: Nationality (Removed/Hidden by default per standard Ethiopian Fayda ID) */}
             {tConfig.showNationality && fields.nationality && (
               <div
                 className={`absolute transition-all rounded-sm p-0 ${
@@ -1137,7 +1068,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             )}
 
-            {/* Step-by-Step Address Layer 1: Region Amharic / ክልል */}
             <div
               className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
                 highlightField === 'regionAmharic'
@@ -1176,7 +1106,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Step-by-Step Address Layer 2: Region English */}
             <div
               className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
                 highlightField === 'regionEnglish'
@@ -1220,7 +1149,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Step-by-Step Address Layer 3: Zone / Subcity Amharic / ዞን / ክ/ከተማ */}
             <div
               className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
                 highlightField === 'zoneAmharic' || highlightField === 'zoneSubcity'
@@ -1264,7 +1192,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Step-by-Step Address Layer 4: Zone / Subcity English */}
             <div
               className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
                 highlightField === 'zoneEnglish'
@@ -1308,7 +1235,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Step-by-Step Address Layer 5: Woreda Amharic / ወረዳ */}
             <div
               className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
                 highlightField === 'woredaAmharic' || highlightField === 'woredaKebele'
@@ -1352,7 +1278,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Step-by-Step Address Layer 6: Woreda English */}
             <div
               className={`absolute min-w-[200px] max-w-[440px] transition-all rounded-sm p-0 ${
                 highlightField === 'woredaEnglish'
@@ -1396,7 +1321,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* Bottom Left: Back FAN Cut Layer (Authentic Crop from Slip OR FIN / FAN Cut Box) */}
+            {/* RAW IMAGE CUTTER (No filters, no upscale, no text fallback) */}
             <div
               className={`absolute flex flex-col items-center justify-center transition-all ${
                 highlightField === 'backFanCut' || highlightField === 'barcodeText'
@@ -1420,53 +1345,39 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               onMouseEnter={() => setHoveredFieldId('backFanCut')}
               onMouseLeave={() => setHoveredFieldId(null)}
             >
-             {/* Inner clipped surface */}
-<div
-  className="w-full h-full overflow-hidden flex flex-col items-center justify-center bg-white"
-  style={{
-    borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
-    opacity: media.backFanCut?.opacity ?? 0.80,
-    backgroundColor: '#ffffff',
-  }}
->
-  <div
-    className="w-full h-full flex flex-col items-center justify-center p-1 bg-white"
-    style={{
-      borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
-      transform: media.backFanCut?.scaleX ? `scaleX(${media.backFanCut.scaleX})` : undefined,
-    }}
-  >
-    <div
-      className="tracking-widest select-all text-center flex items-center justify-center w-full h-full"
-      style={{
-        fontFamily:
-          fields.barcodeText?.fontFamily === 'Monospace' || fields.barcodeText?.fontFamily === 'OCR-B'
-            ? '"OCR-B", "Consolas", monospace'
-            : 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-        fontWeight:
-          fields.barcodeText?.fontWeight === 'bold' ? 600
-          : fields.barcodeText?.fontWeight === 'medium' ? 500
-          : 400,
-        fontSize: `${fields.barcodeText?.fontSize || 19}px`,
-        color: fields.barcodeText?.color || '#111827',
-        letterSpacing: media.backFanCut?.letterSpacing
-          ? `${media.backFanCut.letterSpacing}em`
-          : '0.12em',
-      }}
-    >
-     function formatBackFan(value?: string): string {
-  const raw = String(value ?? '').trim();
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 16 && !raw.includes(' ')) {
-    return digits.match(/.{4}/g)!.join('   ');
-  }
-  return raw;
-}
-    </div>
-  </div>
-</div>
+              <div
+                className="w-full h-full overflow-hidden flex flex-col items-center justify-center bg-white"
+                style={{
+                  borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
+                  opacity: media.backFanCut?.opacity ?? 0.80,
+                  backgroundColor: '#ffffff',
+                }}
+              >
+                <div
+                  className="w-full h-full flex flex-col items-center justify-center p-1 bg-white"
+                  style={{
+                    borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
+                    transform: media.backFanCut?.scaleX ? `scaleX(${media.backFanCut.scaleX})` : undefined,
+                  }}
+                >
+                  {data.finLayerCropUrl || data.finImageUrl || data.finLayerImageUrl || (data.backFan && (data.backFan.startsWith('data:image') || data.backFan.startsWith('http') || data.backFan.startsWith('blob:')) ? data.backFan : null) ? (
+                    <img
+                      src={(data.finLayerCropUrl || data.finImageUrl || data.finLayerImageUrl || data.backFan) as string}
+                      alt="Raw Back FAN Crop"
+                      className="w-full h-full pointer-events-none select-none"
+                      style={{ 
+                        objectFit: 'contain',
+                        mixBlendMode: 'multiply'
+                      }}
+                    />
+                  ) : (
+                    <div className="text-[10px] text-gray-400 font-mono">
+                      Missing Crop Layer
+                    </div>
+                  )}
+                </div>
+              </div>
 
-              {/* Coordinates & Dimensions Badge */}
               {(showCoordinatesBadges || highlightField === 'backFanCut' || hoveredFieldId === 'backFanCut') && !isExporting && (
                 <div className="absolute top-1 left-1 bg-slate-900/90 text-white text-[9px] font-mono px-1.5 py-0.5 rounded shadow-md pointer-events-none flex items-center gap-1 z-30">
                   <span className="text-emerald-400">Back FAN X:{media.backFanCut?.x ?? 45}</span>
@@ -1475,10 +1386,8 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 </div>
               )}
 
-              {/* Interactive Stretch / Resize Controls on Card (Coordination Editing Mode) */}
               {interactive && !isExporting && (highlightField === 'backFanCut' || hoveredFieldId === 'backFanCut') && (
                 <>
-                  {/* Right Edge: Horizontal Stretch Handle */}
                   <div
                     className="absolute -right-2.5 top-1/2 -translate-y-1/2 w-5 h-10 cursor-ew-resize flex items-center justify-center z-40 group"
                     title="Drag to Stretch Back FAN Width (የተዘረጋ ስፋት)"
@@ -1502,7 +1411,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                     </span>
                   </div>
 
-                  {/* Bottom Edge: Vertical Resize Handle */}
                   <div
                     className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 h-5 w-10 cursor-ns-resize flex items-center justify-center z-40 group"
                     title="Drag to Resize Back FAN Height"
@@ -1526,7 +1434,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                     </span>
                   </div>
 
-                  {/* Bottom-Right Corner: Diagonal Stretch Handle */}
                   <div
                     className="absolute -right-2 -bottom-2 w-5 h-5 cursor-nwse-resize bg-emerald-600 hover:bg-emerald-500 rounded-br-lg rounded-tl-sm border-2 border-white shadow-md flex items-center justify-center text-white text-[10px] font-bold z-50 transition-transform hover:scale-110"
                     title="Drag to Stretch Width & Height"
@@ -1545,7 +1452,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                     ⤡
                   </div>
 
-                  {/* Floating Mini Stretch Quick-Toolbar */}
                   <div 
                     className="absolute -top-7.5 left-0 flex items-center gap-1.5 bg-slate-900/95 text-white px-2 py-0.5 rounded-md shadow-lg border border-slate-700/80 z-50 text-[10px] font-mono pointer-events-auto"
                     onPointerDown={(e) => e.stopPropagation()}
@@ -1590,7 +1496,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Right Side: Large High-Density Digital QR Code (Frameless - no borders) */}
             <div
               className={`absolute flex flex-col items-center justify-center transition-all ${
                 highlightField === 'qrCodeBack' ? 'ring-4 ring-emerald-500 rounded-lg z-20 shadow-lg' : ''
@@ -1617,7 +1522,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   className="w-full h-full object-contain pointer-events-none select-none"
                   style={{ 
                     imageRendering: 'crisp-edges',
-                    mixBlendMode: 'multiply', // removes any background artifact so background shows through
+                    mixBlendMode: 'multiply',
                   }}
                 />
               ) : (
@@ -1634,7 +1539,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
-            {/* Bottom Footer Notice (Toggleable - hidden if custom template is loaded) */}
             {tConfig.showFooterNotice && !hasCustomBg && (
               <div className="absolute left-10 right-10 bottom-3 flex items-center justify-between border-t border-emerald-900/10 pt-2 text-[10px] text-gray-700 leading-tight" style={{ fontFamily: cardFontFamilyCss }}>
                 <div className="max-w-[680px]">
@@ -1648,7 +1552,6 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             )}
 
-            {/* Serial Number (With 'SN :' prefix and crisp solid white background) */}
             <div
               id="field-serialNumber"
               className={`absolute text-right transition-all ${
@@ -1673,7 +1576,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   backgroundColor: '#ffffff',
                 }}
               >
-                SN : {format7DigitSerial(data.serialNumber)}
+                SN : {(format7DigitSerial(data.serialNumber) || String(data.serialNumber || '0000000')).replace(/[^\d]/g, '').padStart(7, '0').slice(-7)}
               </span>
               {(showCoordinatesBadges || highlightField === 'serialNumber' || hoveredFieldId === 'serialNumber') && !isExporting && (
                 <span className="block text-[8px] font-mono text-gray-500">
@@ -1689,4 +1592,3 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
 });
 
 CardRenderer.displayName = 'CardRenderer';
-
