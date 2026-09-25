@@ -372,3 +372,73 @@ export interface PdfMarkedPreset {
   regions: PdfMarkedRegion[];
   createdAt?: string;
 }
+
+export type TelegramExportFileType =
+  | 'a4_pdf_5_per_page'
+  | 'a4_png_5_per_page'
+  | 'mirrored_transfer_a4'
+  | 'hd_zip_archive';
+
+export interface TelegramColorScheme {
+  id: string;
+  name: string;
+  textColor: string;
+  bgColor: string;
+  accentColor: string;
+  badge: string;
+}
+
+export interface TelegramBotPermanentSettings {
+  botToken?: string;
+  botUsername?: string;
+  activeTemplateNumber: number;
+  photoColorMode: 'color' | 'grayscale'; // 'color' (Colored) or 'grayscale' (B&W)
+  colorSchemeId: string;
+  colorSchemeName: string;
+  primaryTextColor: string;
+  cardBackgroundColor: string;
+  exportFileType: TelegramExportFileType;
+  mirrorVerificationPreview: boolean;
+  mirrorPrintExport: boolean;
+  autoProcessOnUpload: boolean;
+  enableLiveWebhook: boolean;
+  webhookUrl?: string;
+  updatedAt: string;
+}
+
+export interface TelegramFileProcessItem {
+  id: string;
+  fileIndex: number;
+  fileName: string;
+  fileSize: number;
+  status: 'queued' | 'processing' | 'completed' | 'error';
+  progressStep?: string;
+  extractedData?: IdCardData;
+  mirroredFrontUrl?: string;
+  mirroredBackUrl?: string;
+  error?: string;
+  timestamp: number;
+}
+
+export interface TelegramBotMessage {
+  id: string;
+  sender: 'bot' | 'user' | 'system';
+  text: string;
+  timestamp: string;
+  buttons?: Array<{ label: string; action: string; variant?: 'primary' | 'secondary' | 'success' | 'danger' }>;
+  itemPreview?: {
+    fileIndex: number;
+    fileName: string;
+    extractedData: IdCardData;
+    mirroredFrontUrl?: string;
+    mirroredBackUrl?: string;
+  };
+  exportedDocument?: {
+    fileName: string;
+    fileUrl: string;
+    fileType: TelegramExportFileType;
+    itemCount: number;
+  };
+  isLoading?: boolean;
+}
+

@@ -175,6 +175,51 @@ export function detectPortraitByColorThresholding(
   const imgData = aCtx.getImageData(0, 0, aW, aH);
   const data = imgData.data;
 
+  // 1b. Check if the input is already a standalone direct portrait photo (e.g., small JPEG portrait or passport photo)
+  // If the canvas aspect ratio is roughly portrait (0.70 to 1.40) and is NOT an A4 document page,
+  // evaluate if the photo fills the frame rather than being a document slip.
+  const canvasAspect = origH / origW;
+  const isDocumentSlip = origW >= 400 && origH >= 500 && canvasAspect >= 1.25 && canvasAspect <= 1.6;
+  if (!isDocumentSlip && !options.searchZone && canvasAspect >= 0.70 && canvasAspect <= 1.40) {
+    let sampleSkinCount = 0;
+    let sampleNonWhiteCount = 0;
+    const totalSamples = 200;
+    for (let s = 0; s < totalSamples; s++) {
+      const rx = Math.floor(Math.random() * aW);
+      const ry = Math.floor(Math.random() * aH);
+      const sIdx = (ry * aW + rx) * 4;
+      const sr = data[sIdx];
+      const sg = data[sIdx + 1];
+      const sb = data[sIdx + 2];
+      if (isSkinPixel(sr, sg, sb)) sampleSkinCount++;
+      const sLum = 0.299 * sr + 0.587 * sg + 0.114 * sb;
+      if (sLum < 235) sampleNonWhiteCount++;
+    }
+
+    // Only if image is heavily filled with a face and not a white paper slip (>85% non-white and >20% skin)
+    if (sampleNonWhiteCount > totalSamples * 0.85 && sampleSkinCount >= totalSamples * 0.20) {
+      let bW = origW;
+      let bH = Math.round(origW * targetAspect);
+      let bX = 0;
+      let bY = 0;
+      if (bH > origH) {
+        bH = origH;
+        bW = Math.round(bH / targetAspect);
+        bX = Math.round((origW - bW) / 2);
+      } else {
+        bY = Math.round((origH - bH) / 2);
+      }
+      return {
+        boundingBox: { x: bX, y: bY, width: bW, height: bH },
+        confidence: 96,
+        aspectRatio: targetAspect,
+        method: 'color-threshold',
+        paperLuminance: 240,
+        contrastRatio: 1.0,
+      };
+    }
+  }
+
   // 2. Establish paper background baseline
   const paper = samplePaperBackground(data, aW, aH);
   const lumThreshold = options.paperLuminanceThreshold ?? Math.min(235, Math.max(185, paper.luminance - 20));
@@ -182,17 +227,18 @@ export function detectPortraitByColorThresholding(
   const distThreshold = options.colorDistanceThreshold ?? 26;
 
   // 3. Define candidate search window on the slip:
-  // On Ethiopian Fayda slips & ID records, portrait is located in the upper half of the document.
-  let startX = Math.round(aW * 0.02);
-  let endX = Math.round(aW * 0.52);
-  let startY = Math.round(aH * 0.06);
-  let endY = Math.round(aH * 0.56);
+  // On Ethiopian Fayda slips, the portrait photo is strictly in the top-left section (x: 4% - 28%, y: 12% - 42%)
+  // It MUST NOT search into the right area (x > 28%) where the applicant name and details reside!
+  let startX = Math.round(aW * 0.04);
+  let endX = Math.round(aW * 0.28);
+  let startY = Math.round(aH * 0.12);
+  let endY = Math.round(aH * 0.42);
 
   if (options.searchZone) {
-    // If a search zone hint is provided, expand with 15% margin
+    // If a search zone hint is provided (e.g. from app's calibrated regions), stay tightly within it
     const sz = options.searchZone;
-    const marginX = Math.round(sz.width * scale * 0.15);
-    const marginY = Math.round(sz.height * scale * 0.15);
+    const marginX = Math.round(sz.width * scale * 0.05);
+    const marginY = Math.round(sz.height * scale * 0.05);
     startX = Math.max(0, Math.round(sz.x * scale) - marginX);
     endX = Math.min(aW, Math.round((sz.x + sz.width) * scale) + marginX);
     startY = Math.max(0, Math.round(sz.y * scale) - marginY);
@@ -202,10 +248,10 @@ export function detectPortraitByColorThresholding(
   const zoneW = endX - startX;
   const zoneH = endY - startY;
   if (zoneW < 30 || zoneH < 40) {
-    startX = Math.round(aW * 0.02);
-    endX = Math.round(aW * 0.52);
-    startY = Math.round(aH * 0.06);
-    endY = Math.round(aH * 0.56);
+    startX = Math.round(aW * 0.04);
+    endX = Math.round(aW * 0.28);
+    startY = Math.round(aH * 0.12);
+    endY = Math.round(aH * 0.42);
   }
 
   // 4. Binary Color Thresholding Mask
@@ -266,11 +312,11 @@ export function detectPortraitByColorThresholding(
   }
 
   // 6. Find dense contiguous spans in X and Y
-  // Minimum width: ~12% of document width, Maximum width: ~38%
-  const minPhotoW = Math.max(25, Math.round(aW * 0.12));
-  const maxPhotoW = Math.round(aW * 0.38);
-  const minPhotoH = Math.max(35, Math.round(minPhotoW * 1.1));
-  const maxPhotoH = Math.round(maxPhotoW * 1.6);
+  // Strictly matched to standard Fayda portrait dimensions: width ~20-24% of slip
+  const minPhotoW = Math.max(20, Math.round(aW * 0.18));
+  const maxPhotoW = Math.round(aW * 0.24);
+  const minPhotoH = Math.max(25, Math.round(minPhotoW * 1.1));
+  const maxPhotoH = Math.round(maxPhotoW * 1.4);
 
   // Column threshold: at least 15% of candidate column is occupied by photo
   const colThreshold = Math.max(6, Math.round((endY - startY) * 0.14));
@@ -371,10 +417,13 @@ export function detectPortraitByColorThresholding(
       detY = Math.max(0, detY - Math.round(diffH * 0.3));
       detH = idealH;
     } else {
-      // If too tall, expand width symmetrically
-      const idealW = Math.round(detH / targetAspect);
-      const diffW = idealW - detW;
+      // If too tall, adjust width without exceeding photo boundaries or encroaching into name text
+      const idealW = Math.min(Math.round(aW * 0.24), Math.round(detH / targetAspect));
+      const diffW = Math.max(0, idealW - detW);
       detX = Math.max(0, detX - Math.round(diffW * 0.5));
+      if (detX + idealW > Math.round(aW * 0.28)) {
+        detX = Math.max(0, Math.round(aW * 0.28) - idealW);
+      }
       detW = idealW;
     }
   }

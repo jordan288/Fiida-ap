@@ -415,6 +415,7 @@ export const DEFAULT_COORDINATES: CoordinatesConfig = {
       width: 470,
       height: 470,
       borderRadius: 8,
+      opacity: 0.8,
     },
   },
 };
@@ -450,10 +451,10 @@ export const DEFAULT_TEMPLATE_CONFIG: TemplateConfig = {
 export const PRESET_TEMPLATES: TemplatePreset[] = [
   {
     id: 'fayda_official',
-    name: 'Fayda Official National Template',
-    description: 'Federal Democratic Republic of Ethiopia standard rainbow guilloche security template with micro-text wave patterns.',
+    name: 'Template 1',
+    description: 'Template 1 - Federal Democratic Republic of Ethiopia standard rainbow guilloche security template.',
     themeColor: '#059669',
-    badge: 'Standard Federal',
+    badge: 'Template 1',
     config: {
       sourceType: 'builtIn',
       presetId: 'fayda_official',
@@ -479,10 +480,10 @@ export const PRESET_TEMPLATES: TemplatePreset[] = [
   },
   {
     id: 'golden_hologram',
-    name: 'Golden Security Hologram Blank',
-    description: 'Luxurious gold-amber security gradient with dual guilloche rosettes and elevated anti-counterfeit protection.',
+    name: 'Template 2',
+    description: 'Template 2 - Gold-amber security gradient with dual guilloche rosettes and elevated protection.',
     themeColor: '#d97706',
-    badge: 'Holographic Gold',
+    badge: 'Template 2',
     config: {
       sourceType: 'preset',
       presetId: 'golden_hologram',
@@ -508,10 +509,10 @@ export const PRESET_TEMPLATES: TemplatePreset[] = [
   },
   {
     id: 'cyber_blue',
-    name: 'National Digital Security Blue',
-    description: 'High-density cobalt and cyan geometric micro-lattice designed for digital biometric authentication cards.',
+    name: 'Template 3',
+    description: 'Template 3 - High-density cobalt and cyan geometric micro-lattice designed for digital authentication.',
     themeColor: '#0284c7',
-    badge: 'Cyber Cobalt',
+    badge: 'Template 3',
     config: {
       sourceType: 'preset',
       presetId: 'cyber_blue',
@@ -537,10 +538,10 @@ export const PRESET_TEMPLATES: TemplatePreset[] = [
   },
   {
     id: 'minimal_white',
-    name: 'Clean Blank PVC (For Pre-Printed Cards)',
-    description: 'Pristine pure white substrate optimized for printing onto pre-manufactured plastic card blanks.',
+    name: 'Template 4',
+    description: 'Template 4 - Pristine white substrate optimized for printing onto pre-manufactured plastic card blanks.',
     themeColor: '#475569',
-    badge: 'Direct PVC Blank',
+    badge: 'Template 4',
     config: {
       sourceType: 'preset',
       presetId: 'minimal_white',

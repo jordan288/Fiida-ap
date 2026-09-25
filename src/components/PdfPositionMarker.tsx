@@ -100,11 +100,16 @@ export const PdfPositionMarker: React.FC<PdfPositionMarkerProps> = ({
     if (canvasDimensions && canvasDimensions.width > 0 && canvasDimensions.height > 0) {
       if (detectedPhotoBox && !saved) {
         const photo = base.find((r) => r.id === 'photo');
-        if (photo) {
-          photo.x = Math.max(0, Math.min(90, (detectedPhotoBox.x / canvasDimensions.width) * 100));
-          photo.y = Math.max(0, Math.min(90, (detectedPhotoBox.y / canvasDimensions.height) * 100));
-          photo.width = Math.max(5, Math.min(50, (detectedPhotoBox.width / canvasDimensions.width) * 100));
-          photo.height = Math.max(5, Math.min(50, (detectedPhotoBox.height / canvasDimensions.height) * 100));
+        const pX = (detectedPhotoBox.x / canvasDimensions.width) * 100;
+        const pY = (detectedPhotoBox.y / canvasDimensions.height) * 100;
+        const pW = (detectedPhotoBox.width / canvasDimensions.width) * 100;
+        const pH = (detectedPhotoBox.height / canvasDimensions.height) * 100;
+        // Only override if within realistic portrait photo bounds on Fayda slip (w <= 26%, x <= 15%)
+        if (photo && pW <= 26 && pX <= 15 && pH <= 32) {
+          photo.x = Math.max(2, pX);
+          photo.y = Math.max(5, pY);
+          photo.width = Math.max(15, pW);
+          photo.height = Math.max(18, pH);
         }
       }
       if (detectedQrBox && !saved) {

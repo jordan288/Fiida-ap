@@ -105,6 +105,43 @@ export function detectPhotoRegion(
   const imgData = aCtx.getImageData(0, 0, aW, aH);
   const data = imgData.data;
 
+  // Check if this image is already a standalone portrait photo (e.g., small JPEG passport photo or selfie, NOT a document slip)
+  // A document slip is larger, has white margins, and aspect ratio ~1.414. Standalone photos don't have slip margins.
+  const canvasAspect = height / width;
+  const isDocumentPage = !qrBox && width >= 400 && height >= 500 && canvasAspect >= 1.25 && canvasAspect <= 1.6;
+  if (!isDocumentPage && !qrBox && canvasAspect >= 0.70 && canvasAspect <= 1.40) {
+    let nonWhiteSamples = 0;
+    let skinSamples = 0;
+    const testSampleCount = 150;
+    for (let i = 0; i < testSampleCount; i++) {
+      const rx = Math.floor(Math.random() * aW);
+      const ry = Math.floor(Math.random() * aH);
+      const idx = (ry * aW + rx) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (lum < 235) nonWhiteSamples++;
+      if (isSkinPixel(r, g, b)) skinSamples++;
+    }
+    // Only if image is almost entirely filled with a face and not a white paper slip (>85% non-white and >20% skin)
+    if (nonWhiteSamples > testSampleCount * 0.85 && skinSamples >= testSampleCount * 0.20) {
+      const targetAspect = 1.333;
+      let bW = width;
+      let bH = Math.round(width * targetAspect);
+      let bX = 0;
+      let bY = 0;
+      if (bH > height) {
+        bH = height;
+        bW = Math.round(bH / targetAspect);
+        bX = Math.round((width - bW) / 2);
+      } else {
+        bY = Math.round((height - bH) / 2);
+      }
+      return { x: bX, y: bY, width: bW, height: bH, confidence: 98 };
+    }
+  }
+
   // Scaled QR exclusion box
   const qrScaled = qrBox
     ? {
@@ -130,30 +167,33 @@ export function detectPhotoRegion(
   }
 
   // Candidate regions to evaluate:
-  // Typical passport photo aspect ratio is 3:4 (w:h = 0.75)
-  // Window width typically between 14% and 30% of document width
+  // On Ethiopian Fayda slips, the photo is strictly located in the top-left section (x: 5% - 8%, y: 13% - 18%, w: ~22%)
+  // We MUST strictly confine candidate search to this zone so it never snaps larger space or brings text information
   const candidateBoxes: { box: BoundingBox; score: number }[] = [];
 
   const targetAspect = 1.33; // height / width
   const testWidths = [
-    Math.round(aW * 0.18),
+    Math.round(aW * 0.20),
     Math.round(aW * 0.22),
-    Math.round(aW * 0.26),
+    Math.round(aW * 0.24),
   ];
 
-  // Search candidate zones:
-  // Zone 1: Upper-left quadrant (Standard Ethiopian Fayda Slip format)
-  // Zone 2: Upper-right quadrant (Fayda Digital Card Preview format)
-  // Zone 3: Middle-lower half (A4 full sheet card printout format)
-  const stepX = Math.round(aW * 0.03);
-  const stepY = Math.round(aH * 0.03);
+  // Restrict search strictly to the standard top-left photo zone (X: 3% to 9%, Y: 11% to 19%)
+  const minSearchX = Math.round(aW * 0.03);
+  const maxSearchX = Math.round(aW * 0.09);
+  const minSearchY = Math.round(aH * 0.11);
+  const maxSearchY = Math.round(aH * 0.19);
+  const stepX = Math.max(1, Math.round(aW * 0.015));
+  const stepY = Math.max(1, Math.round(aH * 0.015));
 
   for (const tW of testWidths) {
     const tH = Math.round(tW * targetAspect);
     if (tH >= aH) continue;
 
-    for (let y = Math.round(aH * 0.05); y <= aH - tH - Math.round(aH * 0.05); y += stepY) {
-      for (let x = Math.round(aW * 0.03); x <= aW - tW - Math.round(aW * 0.03); x += stepX) {
+    for (let y = minSearchY; y <= maxSearchY; y += stepY) {
+      for (let x = minSearchX; x <= maxSearchX; x += stepX) {
+        if (x + tW > Math.round(aW * 0.28)) continue; // Never encroach into name text area!
+
         // Skip if heavily overlapping the QR code
         if (qrScaled) {
           const overlapX = Math.max(0, Math.min(x + tW, qrScaled.x + qrScaled.w) - Math.max(x, qrScaled.x));
@@ -185,12 +225,14 @@ export function detectPhotoRegion(
 
   if (candidateBoxes.length > 0 && candidateBoxes[0].score > 15) {
     const best = candidateBoxes[0].box;
-    // Fine-tune and trim border from candidate
-    return refinePhotoBoundingBox(canvas, best);
+    // Boundary check to ensure it stays strictly within the app's photo zone
+    if (best.width <= Math.round(width * 0.26) && best.x <= Math.round(width * 0.12)) {
+      return refinePhotoBoundingBox(canvas, best);
+    }
   }
 
-  // Fallback to layout heuristics if no clear skin locus score
-  return detectByLayoutHeuristics(canvas, qrBox);
+  // Default to the exact standard Fayda slip photo box at the app position
+  return getDefaultPhotoBox(width, height);
 }
 
 /**
@@ -332,14 +374,14 @@ function detectByLayoutHeuristics(
 }
 
 /**
- * Standard default photo box (Top-left, standard Fayda verification slip)
+ * Standard default photo box (Top-left, standard Fayda verification slip - matches DEFAULT_PDF_MARKED_REGIONS)
  */
 export function getDefaultPhotoBox(canvasWidth: number, canvasHeight: number): BoundingBox {
   const pW = Math.round(canvasWidth * 0.22);
-  const pH = Math.round(pW * 1.33);
+  const pH = Math.round(canvasHeight * 0.23);
   return {
-    x: Math.round(canvasWidth * 0.065),
-    y: Math.round(canvasHeight * 0.135),
+    x: Math.round(canvasWidth * 0.055),
+    y: Math.round(canvasHeight * 0.155),
     width: pW,
     height: pH,
   };

@@ -668,6 +668,9 @@ export async function renderOffscreenCard(
     const qrY = config.media.qrCodeBack.y * scale;
     const qrW = config.media.qrCodeBack.width * scale;
     const qrH = config.media.qrCodeBack.height * scale;
+    const qrOpacity = (config.media.qrCodeBack?.opacity !== undefined && config.media.qrCodeBack.opacity <= 0.8)
+      ? config.media.qrCodeBack.opacity
+      : 0.8;
 
     if (cardData.qrCodeImageUrl) {
       try {
@@ -675,6 +678,7 @@ export async function renderOffscreenCard(
         const qrImg = await loadImage(cleanQrUrl);
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
+        ctx.globalAlpha = qrOpacity;
         ctx.drawImage(qrImg, qrX, qrY, qrW, qrH);
         ctx.restore();
       } catch (e) {
@@ -692,6 +696,7 @@ export async function renderOffscreenCard(
         const qrImg = await loadImage(qrDataUrl);
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
+        ctx.globalAlpha = qrOpacity;
         ctx.drawImage(qrImg, qrX, qrY, qrW, qrH);
         ctx.restore();
       } catch (e) {}

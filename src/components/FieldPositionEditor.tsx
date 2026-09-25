@@ -49,7 +49,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
       : fieldId === 'photoFrontSecondary'
       ? { id: 'photoFrontSecondary', label: 'Smaller Photo (Photo 2 • አነስተኛ ፎቶ)', side: 'front', x: 825, y: 435, width: 145, height: 175, borderRadius: 0 }
       : fieldId === 'qrCodeBack'
-      ? { id: 'qrCodeBack', label: 'Digital Biometric QR Matrix', side: 'back', x: 465, y: 60, width: 470, height: 470, borderRadius: 8 }
+      ? { id: 'qrCodeBack', label: 'Digital Biometric QR Matrix', side: 'back', x: 465, y: 60, width: 470, height: 470, borderRadius: 8, opacity: 0.8 }
       : undefined
   );
 
@@ -62,7 +62,7 @@ export const FieldPositionEditor: React.FC<FieldPositionEditorProps> = ({
   const currentWidth = media?.width || (fieldId === 'frontBarcode' ? 440 : fieldId === 'backFanCut' ? 440 : fieldId === 'qrCodeBack' ? 470 : fieldId === 'photoFrontSecondary' ? 145 : field?.maxWidth || 300);
   const currentHeight = media?.height || (fieldId === 'frontBarcode' ? 40 : fieldId === 'backFanCut' ? 95 : fieldId === 'qrCodeBack' ? 470 : fieldId === 'photoFrontSecondary' ? 175 : 200);
   const currentRadius = media?.borderRadius !== undefined ? media.borderRadius : 0;
-  const currentOpacity = media?.opacity !== undefined ? media.opacity : 1.0;
+  const currentOpacity = media?.opacity !== undefined ? media.opacity : (fieldId === 'qrCodeBack' ? 0.8 : 1.0);
   const currentFit = media?.fit || 'fill';
   const currentScaleX = media?.scaleX ?? 1.0;
   const currentLetterSpacing = media?.letterSpacing ?? 0.08;

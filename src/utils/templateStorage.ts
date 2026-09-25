@@ -22,6 +22,11 @@ export function loadTemplateCoordinates(templateNum: number, fallback?: Coordina
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.fields && parsed?.media) {
+        if (parsed.media.qrCodeBack) {
+          if (parsed.media.qrCodeBack.opacity === undefined || parsed.media.qrCodeBack.opacity > 0.8) {
+            parsed.media.qrCodeBack.opacity = 0.8;
+          }
+        }
         return parsed;
       }
     }
@@ -46,10 +51,10 @@ export function getDefaultNumberedTemplates(): NumberedTemplate[] {
     {
       number: 1,
       id: 'template_1_custom',
-      name: 'Custom Template #1',
-      description: 'Custom ID Card Blank (Upload your high-res Front and Back template images)',
+      name: 'Template 1',
+      description: 'Standard ID Card Blank (Upload high-res Front & Back template images)',
       themeColor: '#059669',
-      badge: 'Custom Template #1',
+      badge: 'Template 1',
       config: {
         ...DEFAULT_TEMPLATE_CONFIG,
         sourceType: 'custom',
@@ -76,10 +81,10 @@ export function getDefaultNumberedTemplates(): NumberedTemplate[] {
     {
       number: 2,
       id: 'template_2_custom',
-      name: 'Custom Template #2',
-      description: 'Alternative Custom ID Card Blank for dual-printer or client specific PVC layout',
+      name: 'Template 2',
+      description: 'Alternative ID Card Blank for dual-printer or client-specific PVC layout',
       themeColor: '#d97706',
-      badge: 'Custom Template #2',
+      badge: 'Template 2',
       config: {
         ...DEFAULT_TEMPLATE_CONFIG,
         sourceType: 'custom',
@@ -106,10 +111,10 @@ export function getDefaultNumberedTemplates(): NumberedTemplate[] {
     {
       number: 3,
       id: 'template_3_custom',
-      name: 'Custom Template #3',
-      description: 'High-density custom PVC template slot with calibrated coordinate profiles',
+      name: 'Template 3',
+      description: 'High-density PVC template slot with calibrated coordinate profiles',
       themeColor: '#0284c7',
-      badge: 'Custom Template #3',
+      badge: 'Template 3',
       config: {
         ...DEFAULT_TEMPLATE_CONFIG,
         sourceType: 'custom',
@@ -136,10 +141,10 @@ export function getDefaultNumberedTemplates(): NumberedTemplate[] {
     {
       number: 4,
       id: 'template_4_custom',
-      name: 'Custom Template #4',
+      name: 'Template 4',
       description: 'Clean blank PVC substrate for pre-printed plastic cards',
       themeColor: '#475569',
-      badge: 'Custom Template #4',
+      badge: 'Template 4',
       config: {
         ...DEFAULT_TEMPLATE_CONFIG,
         sourceType: 'custom',
@@ -210,6 +215,8 @@ export function loadNumberedTemplates(): NumberedTemplate[] {
             const coords = t.coordinates || loadTemplateCoordinates(t.number);
             return {
               ...t,
+              name: `Template ${t.number}`,
+              badge: `Template ${t.number}`,
               coordinates: coords,
             };
           })

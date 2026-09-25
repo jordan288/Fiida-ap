@@ -9,7 +9,8 @@ import {
   FileCheck,
   SlidersHorizontal,
   CheckCircle2,
-  Scissors
+  Scissors,
+  Bot
 } from 'lucide-react';
 import { SAMPLE_ID_DATA, DEFAULT_COORDINATES, DEFAULT_TEMPLATE_CONFIG, INITIAL_BATCH_QUEUE } from './data/defaultData';
 import { BatchQueueItem, CoordinatesConfig, IdCardData, TemplateConfig, NumberedTemplate } from './types';
@@ -18,6 +19,7 @@ import { PdfSlipExtractor } from './components/PdfSlipExtractor';
 import { BatchProcessor } from './components/BatchProcessor';
 import { SimpleCardConverter } from './components/SimpleCardConverter';
 import { PhotoBackgroundRemover } from './components/PhotoBackgroundRemover';
+import { TelegramBotView } from './components/TelegramBotView';
 import { 
   loadNumberedTemplates, 
   initAndHydrateTemplates,
@@ -35,7 +37,7 @@ const STORAGE_KEY_COORDS = 'fayda_permanent_coords_config_v2';
 const STORAGE_KEY_TEMPLATE = 'fayda_permanent_template_config_v2';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'simple' | 'batch' | 'extractor' | 'calibrator' | 'bgRemover'>('simple');
+  const [activeTab, setActiveTab] = useState<'simple' | 'batch' | 'extractor' | 'calibrator' | 'bgRemover' | 'telegram'>('simple');
   const [idData, setIdData] = useState<IdCardData>(SAMPLE_ID_DATA);
   // Numbered Templates state & persistence (saved by number, working until changed)
   const [numberedTemplates, setNumberedTemplates] = useState<NumberedTemplate[]>(() =>
@@ -67,6 +69,11 @@ export default function App() {
           }
         } else if (parsed.fields.phoneNumber.x === 10) {
           parsed.fields.phoneNumber.x = 45;
+        }
+        if (parsed?.media?.qrCodeBack) {
+          if (parsed.media.qrCodeBack.opacity === undefined || parsed.media.qrCodeBack.opacity > 0.8) {
+            parsed.media.qrCodeBack.opacity = 0.8;
+          }
         }
         return parsed;
       }
@@ -284,6 +291,20 @@ export default function App() {
           {/* Navigation Tabs - Simple Mode Default & Advanced Options */}
           <nav className="flex items-center gap-1.5 bg-slate-800/80 p-1 rounded-2xl border border-slate-700/80">
             <button
+              onClick={() => setActiveTab('telegram')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer relative ${
+                activeTab === 'telegram'
+                  ? 'bg-[#24A1DE] text-white shadow-md shadow-sky-900/40'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+              }`}
+              title="Interactive Telegram Bot: Multi-File Batch, Live File Processing & Mirrored Card Verification"
+            >
+              <Bot className="w-3.5 h-3.5 text-sky-200" />
+              <span>Telegram Bot</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5"></span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('simple')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                 activeTab === 'simple'
@@ -329,8 +350,24 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {activeTab === 'simple' && (
+      {activeTab === 'telegram' ? (
+        <TelegramBotView
+          config={config}
+          setConfig={setConfig}
+          templateConfig={templateConfig}
+          setTemplateConfig={setTemplateConfig}
+          numberedTemplates={numberedTemplates}
+          activeTemplateNumber={activeTemplateNumber}
+          onSelectTemplateNumber={handleSelectTemplateNumber}
+          onOpenInStudio={(cardData) => {
+            setIdData(cardData);
+            setActiveTab('batch');
+          }}
+        />
+      ) : (
+        <>
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            {activeTab === 'simple' && (
           <SimpleCardConverter
             queue={batchQueue}
             setQueue={setBatchQueue}
@@ -450,6 +487,8 @@ export default function App() {
           </div>
         </div>
       </footer>
+        </>
+      )}
     </div>
   );
 }

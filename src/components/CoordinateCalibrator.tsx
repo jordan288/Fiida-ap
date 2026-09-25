@@ -852,6 +852,37 @@ export const CoordinateCalibrator: React.FC<CoordinateCalibratorProps> = ({
                         />
                       </div>
                     )}
+
+                    {/* QR Code Opacity / Transparency */}
+                    <div className="pt-2 border-t border-emerald-200/60">
+                      <div className="flex items-center justify-between text-[11px] font-medium text-gray-700 mb-1">
+                        <span>QR Code Opacity</span>
+                        <span className="font-mono text-emerald-800 font-bold">
+                          {Math.round(((qrMedia.opacity !== undefined ? qrMedia.opacity : 0.8)) * 100)}% (20% Decreased)
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="20"
+                        max="100"
+                        step="5"
+                        value={Math.round(((qrMedia.opacity !== undefined ? qrMedia.opacity : 0.8)) * 100)}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) / 100;
+                          setConfig((prev) => {
+                            const cur = prev.media.qrCodeBack || DEFAULT_COORDINATES.media.qrCodeBack;
+                            return {
+                              ...prev,
+                              media: {
+                                ...prev.media,
+                                qrCodeBack: { ...cur, opacity: val },
+                              },
+                            };
+                          });
+                        }}
+                        className="w-full accent-emerald-600"
+                      />
+                    </div>
                   </div>
                 ) : (
                   <>

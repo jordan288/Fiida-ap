@@ -14,7 +14,7 @@ import { sanitizeEnglishName, sanitizeAmharicName, sanitizeIdCardData } from './
 import { cropExactBarcode, cropAndEnhanceBarcode, detectBarcodeRegionOnSlip, generateCode128DataUrl } from './barcodeEngine';
 import { autoRemovePhotoBackground } from './imageProcessor';
 import { detectSlipOrientationAndRotate, OrientationDetectionResult, rotateCanvas } from './orientationDetector';
-import { cropHighQualityFanLayer, getEffectiveRegions } from './pdfRegionExtractor';
+import { cropHighQualityFanLayer, getEffectiveRegions, DEFAULT_PDF_MARKED_REGIONS } from './pdfRegionExtractor';
 
 /**
  * Configure PDF.js worker with dual-mode reliability:
@@ -953,59 +953,43 @@ export async function extractFromPdf(
       }
     })(),
 
-    // 2. Automated color thresholding photo area detection & crop
+    // 2. Strict App Position photo area crop (strictly matches DEFAULT_PDF_MARKED_REGIONS & user calibrated positions)
     (async () => {
       if (!ctx) return undefined;
       try {
-        // Priority: Take photo position from the PDF slip extractor's calibrated / marked regions
         const effectiveRegs = getEffectiveRegions();
-        const photoReg = effectiveRegs.find((r) => r.id === 'photo');
-        let slipPhotoBox: BoundingBox | undefined;
+        const photoReg = effectiveRegs.find((r) => r.id === 'photo') || DEFAULT_PDF_MARKED_REGIONS.find((r) => r.id === 'photo');
+        
+        let photoBox: BoundingBox;
         if (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0) {
-          slipPhotoBox = {
+          photoBox = {
             x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
             y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
             width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
             height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
           };
+        } else {
+          photoBox = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
         }
 
-        const searchZone = slipPhotoBox || detectPhotoRegion(effectiveCanvas);
-        const thresholdResult = await autoCropPortraitFromCanvas(effectiveCanvas, {
-          searchZone,
-          targetWidth: 960,
-          targetHeight: 1280,
-          applyBackgroundRemoval: false,
-          autoEnhance: true,
-        });
+        // Clamp boundaries strictly within canvas
+        photoBox.x = Math.max(0, Math.min(effectiveCanvas.width - 20, photoBox.x));
+        photoBox.y = Math.max(0, Math.min(effectiveCanvas.height - 20, photoBox.y));
+        photoBox.width = Math.max(20, Math.min(effectiveCanvas.width - photoBox.x, photoBox.width));
+        photoBox.height = Math.max(20, Math.min(effectiveCanvas.height - photoBox.y, photoBox.height));
+
+        const photoUrl = cropPhotoFromCanvas(effectiveCanvas, photoBox, 960, 1280);
         return {
-          photoUrl: thresholdResult.rawCroppedUrl,
-          boundingBox: thresholdResult.boundingBox || searchZone,
+          photoUrl,
+          boundingBox: photoBox,
         };
       } catch (e) {
-        console.warn('Color thresholding photo detection fallback:', e);
-        try {
-          const effectiveRegs = getEffectiveRegions();
-          const photoReg = effectiveRegs.find((r) => r.id === 'photo');
-          const box: BoundingBox = (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0)
-            ? {
-                x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
-                y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
-                width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
-                height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
-              }
-            : detectPhotoRegion(effectiveCanvas);
-          return {
-            photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
-            boundingBox: box,
-          };
-        } catch {
-          const box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
-          return {
-            photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
-            boundingBox: box,
-          };
-        }
+        console.warn('PDF photo crop fallback:', e);
+        const box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
+        return {
+          photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+          boundingBox: box,
+        };
       }
     })(),
 
@@ -1289,59 +1273,41 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
             }
           })(),
 
-          // 2. Color thresholding photo detection & crop
+          // 2. Strict App Position photo area crop (strictly matches DEFAULT_PDF_MARKED_REGIONS & user calibrated positions)
           (async () => {
             if (!ctx) return undefined;
             try {
-              // Priority: Take photo position from the PDF slip extractor's calibrated / marked regions
               const effectiveRegs = getEffectiveRegions();
-              const photoReg = effectiveRegs.find((r) => r.id === 'photo');
-              let slipPhotoBox: BoundingBox | undefined;
+              const photoReg = effectiveRegs.find((r) => r.id === 'photo') || DEFAULT_PDF_MARKED_REGIONS.find((r) => r.id === 'photo');
+              let box: BoundingBox;
               if (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0) {
-                slipPhotoBox = {
+                box = {
                   x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
                   y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
                   width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
                   height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
                 };
+              } else {
+                box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
               }
 
-              const searchZone = slipPhotoBox || detectPhotoRegion(effectiveCanvas);
-              const thresholdResult = await autoCropPortraitFromCanvas(effectiveCanvas, {
-                searchZone,
-                targetWidth: 960,
-                targetHeight: 1280,
-                applyBackgroundRemoval: false,
-                autoEnhance: true,
-              });
+              // Clamp boundaries strictly within canvas
+              box.x = Math.max(0, Math.min(effectiveCanvas.width - 20, box.x));
+              box.y = Math.max(0, Math.min(effectiveCanvas.height - 20, box.y));
+              box.width = Math.max(20, Math.min(effectiveCanvas.width - box.x, box.width));
+              box.height = Math.max(20, Math.min(effectiveCanvas.height - box.y, box.height));
+
               return {
-                photoUrl: thresholdResult.rawCroppedUrl,
-                boundingBox: thresholdResult.boundingBox || searchZone,
+                photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+                boundingBox: box,
               };
             } catch (err) {
-              console.warn('Color thresholding photo detection fallback on image:', err);
-              try {
-                const effectiveRegs = getEffectiveRegions();
-                const photoReg = effectiveRegs.find((r) => r.id === 'photo');
-                const box: BoundingBox = (photoReg && effectiveCanvas.width > 0 && effectiveCanvas.height > 0)
-                  ? {
-                      x: Math.round((photoReg.x / 100) * effectiveCanvas.width),
-                      y: Math.round((photoReg.y / 100) * effectiveCanvas.height),
-                      width: Math.round((photoReg.width / 100) * effectiveCanvas.width),
-                      height: Math.round((photoReg.height / 100) * effectiveCanvas.height),
-                    }
-                  : detectPhotoRegion(effectiveCanvas);
-                return {
-                  photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
-                  boundingBox: box,
-                };
-              } catch {
-                const box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
-                return {
-                  photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
-                  boundingBox: box,
-                };
-              }
+              console.warn('Image photo crop fallback:', err);
+              const box = getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height);
+              return {
+                photoUrl: cropPhotoFromCanvas(effectiveCanvas, box, 960, 1280),
+                boundingBox: box,
+              };
             }
           })(),
 
@@ -1425,7 +1391,7 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
         const parsed = parseFaydaSlipData(qrDecodedText || '', [], qrDecodedText);
         const cutoutUrl = await bgRemovalPromise;
 
-        const finalPhotoUrl = cutoutUrl || extractedPhotoUrl;
+        const finalPhotoUrl = cutoutUrl || extractedPhotoUrl || cropPhotoFromCanvas(effectiveCanvas, getDefaultPhotoBox(effectiveCanvas.width, effectiveCanvas.height), 960, 1280);
         if (finalPhotoUrl) {
           parsed.data.photoUrl = finalPhotoUrl;
           parsed.data.secondaryPhotoUrl = finalPhotoUrl;

@@ -1508,6 +1508,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 borderRadius: `${media.qrCodeBack.borderRadius || 0}px`,
                 border: 'none',
                 background: 'transparent',
+                opacity: (media.qrCodeBack.opacity !== undefined && media.qrCodeBack.opacity <= 0.8) ? media.qrCodeBack.opacity : 0.8,
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'qrCodeBack', media.qrCodeBack.x, media.qrCodeBack.y)
@@ -1526,7 +1527,9 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   }}
                 />
               ) : (
-                <div className="w-full h-full bg-white/40 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center border border-dashed border-gray-300 rounded-lg">
+                <div
+                  className="w-full h-full bg-white/40 flex flex-col items-center justify-center text-xs text-gray-400 p-2 text-center border border-dashed border-gray-300 rounded-lg"
+                >
                   <span className="text-[10px] font-medium text-gray-500">Biometric QR Matrix</span>
                 </div>
               )}
