@@ -7,6 +7,7 @@ interface UserProfile {
   uid: string;
   email: string | null;
   credits: number;
+  isAdmin: boolean;
 }
 
 interface AuthContextType {
@@ -33,12 +34,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const docSnap = await getDoc(userRef);
 
         if (!docSnap.exists()) {
-          // New user gets free welcome credits (e.g., 5 prints)
-          const newProfile = { uid: currentUser.uid, email: currentUser.email, credits: 5 };
+          // New user defaults to non-admin with 5 free credits
+          const newProfile = { 
+            uid: currentUser.uid, 
+            email: currentUser.email, 
+            credits: 5,
+            isAdmin: false 
+          };
           await setDoc(userRef, newProfile);
           setProfile(newProfile);
         } else {
-          setProfile(docSnap.data() as UserProfile);
+          const data = docSnap.data();
+          setProfile({
+            uid: data.uid,
+            email: data.email,
+            credits: data.credits ?? 0,
+            isAdmin: data.isAdmin === true || data.role === 'admin'
+          });
         }
       } else {
         setProfile(null);
