@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   CreditCard, 
   Crosshair, 
@@ -9,8 +9,7 @@ import {
   FileCheck,
   SlidersHorizontal,
   CheckCircle2,
-  Scissors,
-  Bot
+  Scissors
 } from 'lucide-react';
 import { SAMPLE_ID_DATA, DEFAULT_COORDINATES, DEFAULT_TEMPLATE_CONFIG, INITIAL_BATCH_QUEUE } from './data/defaultData';
 import { BatchQueueItem, CoordinatesConfig, IdCardData, TemplateConfig, NumberedTemplate } from './types';
@@ -19,7 +18,6 @@ import { PdfSlipExtractor } from './components/PdfSlipExtractor';
 import { BatchProcessor } from './components/BatchProcessor';
 import { SimpleCardConverter } from './components/SimpleCardConverter';
 import { PhotoBackgroundRemover } from './components/PhotoBackgroundRemover';
-import { TelegramBotView } from './components/TelegramBotView';
 import { 
   loadNumberedTemplates, 
   initAndHydrateTemplates,
@@ -37,8 +35,10 @@ const STORAGE_KEY_COORDS = 'fayda_permanent_coords_config_v2';
 const STORAGE_KEY_TEMPLATE = 'fayda_permanent_template_config_v2';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'simple' | 'batch' | 'extractor' | 'calibrator' | 'bgRemover' | 'telegram'>('simple');
+  const [activeTab, setActiveTab] = useState<'simple' | 'batch' | 'extractor' | 'calibrator' | 'bgRemover'>('simple');
   const [idData, setIdData] = useState<IdCardData>(SAMPLE_ID_DATA);
+  const [isHydrated, setIsHydrated] = useState<boolean>(false);
+
   // Numbered Templates state & persistence (saved by number, working until changed)
   const [numberedTemplates, setNumberedTemplates] = useState<NumberedTemplate[]>(() =>
     loadNumberedTemplates()
@@ -98,12 +98,12 @@ export default function App() {
   const [activeQueueIndex, setActiveQueueIndex] = useState<number>(0);
 
   // Switching ref to prevent useEffect race condition when changing templates
-  const isSwitchingTemplateRef = React.useRef(false);
-  const activeTemplateNumberRef = React.useRef(activeTemplateNumber);
+  const isSwitchingTemplateRef = useRef(false);
+  const activeTemplateNumberRef = useRef(activeTemplateNumber);
   activeTemplateNumberRef.current = activeTemplateNumber;
 
   // Automatically hydrate full templates & high-res images from IndexedDB on startup
-  React.useEffect(() => {
+  useEffect(() => {
     let isMounted = true;
     initAndHydrateTemplates().then((hydrated) => {
       if (isMounted && hydrated && hydrated.length > 0) {
@@ -119,6 +119,7 @@ export default function App() {
           }
         }
       }
+      setIsHydrated(true);
     });
     return () => {
       isMounted = false;
@@ -126,8 +127,8 @@ export default function App() {
   }, []);
 
   // Automatically make coordinate settings permanent and tied to active template
-  React.useEffect(() => {
-    if (isSwitchingTemplateRef.current) return;
+  useEffect(() => {
+    if (!isHydrated || isSwitchingTemplateRef.current) return;
     const currentNum = activeTemplateNumberRef.current;
 
     try {
@@ -151,15 +152,14 @@ export default function App() {
       saveNumberedTemplates(updated);
       return updated;
     });
-  }, [config]);
+  }, [config, isHydrated]);
 
   // Keep active template settings and active numbered template permanently synced
-  React.useEffect(() => {
-    if (isSwitchingTemplateRef.current) return;
+  useEffect(() => {
+    if (!isHydrated || isSwitchingTemplateRef.current) return;
     const currentNum = activeTemplateNumberRef.current;
 
     try {
-      // Keep STORAGE_KEY_TEMPLATE lightweight - if images are large, strip dataUrl from this secondary key
       const safeConfig = { ...templateConfig };
       if (safeConfig.frontImageUrl && safeConfig.frontImageUrl.length > 5000) {
         safeConfig.frontImageUrl = '';
@@ -173,24 +173,20 @@ export default function App() {
     setNumberedTemplates((prev) =>
       syncActiveTemplateConfig(currentNum, templateConfig, prev)
     );
-  }, [templateConfig]);
+  }, [templateConfig, isHydrated]);
 
   const handleSelectTemplateNumber = (num: number) => {
     const fromNum = activeTemplateNumberRef.current;
     if (fromNum === num) return;
 
-    // 1. Mark template switching in progress to block accidental useEffect overwrites
     isSwitchingTemplateRef.current = true;
 
-    // 2. Permanently save the leaving template's coordinates & config
     const leavingCoordsCloned = JSON.parse(JSON.stringify(config));
     saveTemplateCoordinates(fromNum, leavingCoordsCloned);
 
-    // 3. Find the target template and load its coordinates & config
     const currentList = numberedTemplates && numberedTemplates.length > 0 ? numberedTemplates : loadNumberedTemplates();
     const target = currentList.find((t) => t.number === num);
 
-    // Target coordinates: check template object first, then template-specific storage, then DEFAULT_COORDINATES
     const targetCoordsFromStorage = loadTemplateCoordinates(num);
     const targetCoords = (target?.coordinates && target.coordinates.fields)
       ? target.coordinates
@@ -203,7 +199,6 @@ export default function App() {
       ? JSON.parse(JSON.stringify(target.config))
       : JSON.parse(JSON.stringify(DEFAULT_TEMPLATE_CONFIG));
 
-    // 4. Update numberedTemplates state so both the leaving and incoming templates have their accurate data
     const updatedList = currentList.map((t) => {
       if (t.number === fromNum) {
         return {
@@ -227,11 +222,9 @@ export default function App() {
     setNumberedTemplates(updatedList);
     saveNumberedTemplates(updatedList);
 
-    // 5. Update active template number
     setActiveTemplateNumber(num);
     setActiveTemplateNumberState(num);
 
-    // 6. Atomically switch visual settings AND coordinates to the selected template
     setTemplateConfig(targetConfig);
     setConfig(clonedTargetCoords);
 
@@ -262,8 +255,6 @@ export default function App() {
     setNumberedTemplates(updated);
   };
 
-  const readyBatchCount = batchQueue.filter((i) => i.status === 'ready').length;
-
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col selection:bg-emerald-200">
       {/* Top Header */}
@@ -288,22 +279,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Navigation Tabs - Simple Mode Default & Advanced Options */}
+          {/* Navigation Tabs */}
           <nav className="flex items-center gap-1.5 bg-slate-800/80 p-1 rounded-2xl border border-slate-700/80">
-            <button
-              onClick={() => setActiveTab('telegram')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer relative ${
-                activeTab === 'telegram'
-                  ? 'bg-[#24A1DE] text-white shadow-md shadow-sky-900/40'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
-              }`}
-              title="Interactive Telegram Bot: Multi-File Batch, Live File Processing & Mirrored Card Verification"
-            >
-              <Bot className="w-3.5 h-3.5 text-sky-200" />
-              <span>Telegram Bot</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5"></span>
-            </button>
-
             <button
               onClick={() => setActiveTab('simple')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -350,24 +327,8 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      {activeTab === 'telegram' ? (
-        <TelegramBotView
-          config={config}
-          setConfig={setConfig}
-          templateConfig={templateConfig}
-          setTemplateConfig={setTemplateConfig}
-          numberedTemplates={numberedTemplates}
-          activeTemplateNumber={activeTemplateNumber}
-          onSelectTemplateNumber={handleSelectTemplateNumber}
-          onOpenInStudio={(cardData) => {
-            setIdData(cardData);
-            setActiveTab('batch');
-          }}
-        />
-      ) : (
-        <>
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-            {activeTab === 'simple' && (
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeTab === 'simple' && (
           <SimpleCardConverter
             queue={batchQueue}
             setQueue={setBatchQueue}
@@ -487,8 +448,6 @@ export default function App() {
           </div>
         </div>
       </footer>
-        </>
-      )}
     </div>
   );
 }
