@@ -7,13 +7,63 @@ export interface ExactQrResult {
   detected: boolean;
 }
 
+export interface CustomQrCropRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isPercentage?: boolean;
+}
+
 /**
- * Accurately detects and crops the official biometric QR code from an Ethiopian Fayda slip canvas.
- * If jsQR decodes the payload, it uses exact finder corners.
- * If the QR code is too dense for jsQR to decode the string, it uses visual 2D matrix clustering
- * and finder pattern detection to locate and crop the exact authentic QR code from the PDF file.
+ * Retrieves the manually saved permanent mapper region or default calibrated mapper position.
+ * Eliminates automatic guessing so crops strictly match what is mapped.
  */
-export function cropExactQrCode(sourceCanvas: HTMLCanvasElement): ExactQrResult {
+export function getManualMapperQrRegion(): CustomQrCropRegion {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw =
+        localStorage.getItem('fayda_pdf_permanent_regions_v2') ||
+        localStorage.getItem('fayda_pdf_marked_permanent_regions_v1') ||
+        localStorage.getItem('fayda_pdf_marked_regions_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const qr = parsed.find((r: any) => r.id === 'qrCode' || r.type === 'qr');
+          if (qr && qr.width > 0 && qr.height > 0) {
+            return {
+              x: Number(qr.x),
+              y: Number(qr.y),
+              width: Number(qr.width),
+              height: Number(qr.height),
+              isPercentage: true,
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Error reading permanent mapper regions for QR:', e);
+    }
+  }
+  // Standard calibrated Ethiopian Fayda verification slip mapper position (lower right quadrant)
+  return {
+    x: 67.5,
+    y: 53.0,
+    width: 26.5,
+    height: 21.0,
+    isPercentage: true,
+  };
+}
+
+/**
+ * Accurately crops the official biometric QR code strictly using the manually selected mapper position.
+ * Eliminates automatic wandering, multi-quadrant scanning, and table-line edge shrinkage
+ * that cause misalignment on high-density biometric Ethiopian Fayda QR codes.
+ */
+export function cropExactQrCode(
+  sourceCanvas: HTMLCanvasElement,
+  customRegion?: CustomQrCropRegion
+): ExactQrResult {
   const width = sourceCanvas.width;
   const height = sourceCanvas.height;
   const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
@@ -22,104 +72,44 @@ export function cropExactQrCode(sourceCanvas: HTMLCanvasElement): ExactQrResult 
     return { detected: false };
   }
 
-  // --- Step 1: Multi-pass jsQR Scanning ---
-  let qrCode: any = null;
-  let regionOffset = { x: 0, y: 0 };
+  // --- Step 1: Strictly Use Manually Selected Mapper Position ---
+  const activeRegion: CustomQrCropRegion =
+    customRegion && customRegion.width > 0 && customRegion.height > 0
+      ? customRegion
+      : getManualMapperQrRegion();
 
-  // Pass 1.1: Fast path - Middle-right quadrant (99% of official Fayda slips have the biometric QR here)
-  const qX = Math.floor(width * 0.40);
-  const qY = Math.floor(height * 0.15);
-  const qW = Math.floor(width * 0.58);
-  const qH = Math.floor(height * 0.72);
-  qrCode = scanCanvasWithJsQR(ctx, qX, qY, qW, qH);
-  if (qrCode) {
-    regionOffset = { x: qX, y: qY };
-  }
+  const isPct = activeRegion.isPercentage ?? (activeRegion.x <= 100 && activeRegion.width <= 100);
+  const rx = isPct ? Math.round((activeRegion.x / 100) * width) : Math.round(activeRegion.x);
+  const ry = isPct ? Math.round((activeRegion.y / 100) * height) : Math.round(activeRegion.y);
+  const rw = isPct ? Math.round((activeRegion.width / 100) * width) : Math.round(activeRegion.width);
+  const rh = isPct ? Math.round((activeRegion.height / 100) * height) : Math.round(activeRegion.height);
 
-  // Pass 1.2: Right half
-  if (!qrCode) {
-    const rightX = Math.floor(width * 0.38);
-    const rightW = width - rightX;
-    qrCode = scanCanvasWithJsQR(ctx, rightX, 0, rightW, height);
-    if (qrCode) regionOffset = { x: rightX, y: 0 };
-  }
+  const customPixelBox = {
+    x: Math.max(0, Math.min(width - 20, rx)),
+    y: Math.max(0, Math.min(height - 20, ry)),
+    width: Math.max(20, Math.min(width - rx, rw)),
+    height: Math.max(20, Math.min(height - ry, rh)),
+  };
 
-  // Pass 1.3: Full canvas scan (fallback for non-standard or shifted slips)
-  if (!qrCode) {
-    qrCode = scanCanvasWithJsQR(ctx, 0, 0, width, height);
-  }
-
-  // Pass 1.4: High-contrast thresholded sub-canvas
-  if (!qrCode) {
-    const thresholdScan = scanWithThreshold(sourceCanvas);
-    if (thresholdScan.qrCode) {
-      qrCode = thresholdScan.qrCode;
-      regionOffset = thresholdScan.offset;
+  // Step 2: Local jsQR scan ONLY inside the mapped box to extract raw payload text if decodable
+  let qrText: string | undefined;
+  try {
+    const localQr = scanCanvasWithJsQR(ctx, customPixelBox.x, customPixelBox.y, customPixelBox.width, customPixelBox.height);
+    if (localQr && localQr.data) {
+      qrText = localQr.data;
     }
-  }
+  } catch {}
 
-  // Pass 1.5: Downscaled right half (reduces anti-aliasing noise on dense QR codes)
-  if (!qrCode) {
-    const downscaleScan = scanWithDownscale(sourceCanvas, 0.65);
-    if (downscaleScan.qrCode) {
-      qrCode = downscaleScan.qrCode;
-      regionOffset = downscaleScan.offset;
-    }
-  }
-
-  // --- Step 2: If jsQR succeeded, use exact finder pattern corners ---
-  if (qrCode && qrCode.location) {
-    const loc = qrCode.location;
-    const tlX = loc.topLeftCorner.x + regionOffset.x;
-    const tlY = loc.topLeftCorner.y + regionOffset.y;
-    const trX = loc.topRightCorner.x + regionOffset.x;
-    const trY = loc.topRightCorner.y + regionOffset.y;
-    const blX = loc.bottomLeftCorner.x + regionOffset.x;
-    const blY = loc.bottomLeftCorner.y + regionOffset.y;
-    const brX = loc.bottomRightCorner.x + regionOffset.x;
-    const brY = loc.bottomRightCorner.y + regionOffset.y;
-
-    const minX = Math.min(tlX, blX);
-    const maxX = Math.max(trX, brX);
-    const minY = Math.min(tlY, trY);
-    const maxY = Math.max(blY, brY);
-
-    const rawWidth = maxX - minX;
-    const rawHeight = maxY - minY;
-    const qrDimension = Math.max(rawWidth, rawHeight);
-
-    const dist = Math.hypot(trX - tlX, trY - tlY);
-    const moduleSize = Math.max(2, dist / 35);
-
-    // Tight crop directly around outer finder borders with zero white border expansion
-    const expansion = Math.round(moduleSize * 0.5);
-
-    let cropX = Math.max(0, Math.floor(minX - expansion));
-    let cropY = Math.max(0, Math.floor(minY - expansion));
-    let cropW = Math.min(width - cropX, Math.ceil(qrDimension + expansion * 2));
-    let cropH = Math.min(height - cropY, Math.ceil(qrDimension + expansion * 2));
-
-    const refined = refineQrBoundingBox(ctx, cropX, cropY, cropW, cropH, moduleSize);
-    return cropSquareFromCanvas(sourceCanvas, refined.x, refined.y, refined.width, refined.height, qrCode.data);
-  }
-
-  // --- Step 3: Visual Matrix & Transition Clustering (Fallback when jsQR string decode fails) ---
-  // High-density biometric QR codes in official Fayda PDFs may contain raw binary signatures
-  // that jsQR fails to decode, but the visual QR code is clearly present on the slip.
-  const visualBox = detectVisualQrBoundingBox(ctx, width, height);
-  if (visualBox) {
-    return cropSquareFromCanvas(sourceCanvas, visualBox.x, visualBox.y, visualBox.width, visualBox.height);
-  }
-
-  // --- Step 4: Standard Fayda Slip QR Region Prior ---
-  // In standard Ethiopian Fayda verification slips, the biometric QR code is positioned in the
-  // right column between X ~ 50% to 92% and Y ~ 20% to 62%.
-  const faydaPriorBox = detectFaydaStandardQrRegion(ctx, width, height);
-  if (faydaPriorBox) {
-    return cropSquareFromCanvas(sourceCanvas, faydaPriorBox.x, faydaPriorBox.y, faydaPriorBox.width, faydaPriorBox.height);
-  }
-
-  return { detected: false };
+  // Step 3: Crop directly and strictly from the manually selected mapper position
+  // 1:1 square aspect ratio centered on mapper position, zero white borders, zero distortion
+  return cropSquareFromCanvas(
+    sourceCanvas,
+    customPixelBox.x,
+    customPixelBox.y,
+    customPixelBox.width,
+    customPixelBox.height,
+    qrText
+  );
 }
 
 /**
@@ -141,15 +131,22 @@ function cropSquareFromCanvas(
   const centerX = cropX + cropW / 2;
   const centerY = cropY + cropH / 2;
 
-  let finalX = Math.max(0, Math.round(centerX - squareSize / 2));
-  let finalY = Math.max(0, Math.round(centerY - squareSize / 2));
-  let finalSize = squareSize;
+  let finalSize = Math.min(squareSize, width, height);
+  let finalX = Math.round(centerX - finalSize / 2);
+  let finalY = Math.round(centerY - finalSize / 2);
 
+  // Shift inside canvas boundaries without truncating off-center
   if (finalX + finalSize > width) {
-    finalSize = width - finalX;
+    finalX = width - finalSize;
+  }
+  if (finalX < 0) {
+    finalX = 0;
   }
   if (finalY + finalSize > height) {
-    finalSize = height - finalY;
+    finalY = height - finalSize;
+  }
+  if (finalY < 0) {
+    finalY = 0;
   }
 
   // Crisp output canvas (600x600 for 300 DPI ID card printing)
@@ -304,18 +301,40 @@ function detectFaydaStandardQrRegion(
   height: number
 ): { x: number; y: number; width: number; height: number } | null {
   try {
-    // Standard Fayda region coordinates
-    const approxX = Math.round(width * 0.50);
-    const approxY = Math.round(height * 0.22);
-    const approxSize = Math.round(width * 0.40);
+    // Official Fayda biometric verification slip QR is located at:
+    // X: ~67.5% (approx 63% to 94%), Y: ~53.0% (approx 48% to 75%)
+    // Size is ~26.5% width, perfectly square
+    const primaryX = Math.round(width * 0.65);
+    const primaryY = Math.round(height * 0.50);
+    const primaryW = Math.round(width * 0.28);
+    const primaryH = Math.round(height * 0.25);
+    const primarySize = Math.max(primaryW, primaryH);
 
-    const testW = Math.min(width - approxX, approxSize);
-    const testH = Math.min(height - approxY, approxSize);
+    // Verify contrast in primary region
+    const checkW = Math.min(width - primaryX, primarySize);
+    const checkH = Math.min(height - primaryY, primarySize);
 
-    if (testW > 100 && testH > 100) {
+    if (checkW > 80 && checkH > 80) {
       return {
-        x: approxX,
-        y: approxY,
+        x: primaryX,
+        y: primaryY,
+        width: checkW,
+        height: checkH,
+      };
+    }
+
+    // Secondary fallback for legacy or alternate slip layouts (X: ~52%, Y: ~25%)
+    const altX = Math.round(width * 0.52);
+    const altY = Math.round(height * 0.24);
+    const altSize = Math.round(width * 0.38);
+
+    const testW = Math.min(width - altX, altSize);
+    const testH = Math.min(height - altY, altSize);
+
+    if (testW > 80 && testH > 80) {
+      return {
+        x: altX,
+        y: altY,
         width: testW,
         height: testH,
       };

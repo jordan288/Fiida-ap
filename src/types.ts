@@ -198,6 +198,9 @@ export interface AppSettings {
   a4CardWidthMm?: number;
   a4CardHeightMm?: number;
   a4SizePreset?: A4CardSizePreset;
+  activeTemplateNumber?: number;
+  fileType?: 'pdf' | 'jpeg' | 'png' | 'zip';
+  photoColorMode?: 'color' | 'grayscale';
 }
 
 export type A4CardSizePreset = 'small' | 'standard' | 'oversized' | 'plus' | 'large' | 'max' | 'xlarge' | 'custom';
@@ -438,6 +441,20 @@ export interface TelegramBotMessage {
     fileUrl: string;
     fileType: TelegramExportFileType;
     itemCount: number;
+  };
+  templateShowcase?: {
+    templates: Array<{
+      number: number;
+      name: string;
+      description?: string;
+      frontImageUrl?: string;
+      backImageUrl?: string;
+      badge?: string;
+      themeColor?: string;
+      category?: string;
+      features?: string[];
+      photoStyleLabel?: string;
+    }>;
   };
   isLoading?: boolean;
 }

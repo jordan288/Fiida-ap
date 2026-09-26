@@ -11,9 +11,17 @@ import {
   Printer,
   Sparkles,
   Shield,
-  Layers
+  Layers,
+  FlipHorizontal,
+  Palette,
+  Archive,
 } from 'lucide-react';
-import { AppSettings } from '../types';
+import { AppSettings, NumberedTemplate } from '../types';
+import {
+  loadNumberedTemplates,
+  getActiveTemplateNumber,
+  setActiveTemplateNumber,
+} from '../utils/templateStorage';
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultExportFormat: 'pdf',
@@ -24,6 +32,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   includeCropMarks: true,
   includeMetadataHeader: true,
   autoSavePreference: true,
+  mirrorPrint: false,
+  fileType: 'pdf',
+  photoColorMode: 'color',
+  activeTemplateNumber: 1,
 };
 
 const STORAGE_KEY = 'fayda_app_settings';
@@ -54,6 +66,9 @@ interface AppSettingsModalProps {
   onClose: () => void;
   settings: AppSettings;
   onSaveSettings: (newSettings: AppSettings) => void;
+  numberedTemplates?: NumberedTemplate[];
+  activeTemplateNumber?: number;
+  onSelectTemplateNumber?: (templateNum: number) => void;
 }
 
 export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
@@ -61,21 +76,83 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
   onClose,
   settings,
   onSaveSettings,
+  numberedTemplates: propTemplates,
+  activeTemplateNumber: propActiveTemplateNum,
+  onSelectTemplateNumber,
 }) => {
-  const [localSettings, setLocalSettings] = useState<AppSettings>(settings);
+  const [localSettings, setLocalSettings] = useState<AppSettings>(() => {
+    const saved = loadSavedAppSettings();
+    return {
+      ...saved,
+      ...settings,
+      activeTemplateNumber: propActiveTemplateNum || saved.activeTemplateNumber || getActiveTemplateNumber() || 1,
+    };
+  });
+
+  const [selectedTemplateNum, setSelectedTemplateNum] = useState<number>(() => {
+    return propActiveTemplateNum || localSettings.activeTemplateNumber || getActiveTemplateNumber() || 1;
+  });
+
   const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
+
+  // Available templates list (Templates 1 to 6)
+  const availableTemplates = propTemplates && propTemplates.length > 0
+    ? propTemplates
+    : loadNumberedTemplates();
 
   if (!isOpen) return null;
 
   const handleSave = () => {
-    saveAppSettingsToStorage(localSettings);
-    onSaveSettings(localSettings);
+    const updatedSettings: AppSettings = {
+      ...localSettings,
+      activeTemplateNumber: selectedTemplateNum,
+    };
+
+    saveAppSettingsToStorage(updatedSettings);
+    setActiveTemplateNumber(selectedTemplateNum);
+
+    if (onSelectTemplateNumber) {
+      onSelectTemplateNumber(selectedTemplateNum);
+    }
+
+    onSaveSettings(updatedSettings);
     setSavedSuccess(true);
     setTimeout(() => {
       setSavedSuccess(false);
       onClose();
-    }, 500);
+    }, 450);
   };
+
+  const fileTypeOptions = [
+    {
+      id: 'pdf',
+      label: 'PDF Document',
+      desc: 'ISO A4 Sheet (5 cards/sheet) or CR80 dual-page',
+      icon: FileText,
+      badge: 'Recommended',
+    },
+    {
+      id: 'png',
+      label: 'High-Res PNG',
+      desc: '300/600 DPI crisp raster for plastic thermal printers',
+      icon: ImageIcon,
+      badge: 'Lossless',
+    },
+    {
+      id: 'jpeg',
+      label: 'JPEG Photo Sheet',
+      desc: 'Standard JPEG export with custom DPI & quality',
+      icon: Sparkles,
+      badge: 'Fast',
+    },
+    {
+      id: 'zip',
+      label: 'ZIP Archive',
+      desc: 'Individual high-definition front & back card images',
+      icon: Archive,
+      badge: 'Batch',
+    },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-md overflow-y-auto animate-fadeIn">
@@ -90,11 +167,11 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
               <h2 className="text-base font-bold flex items-center gap-2">
                 System Export & Output Settings
                 <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30 font-mono">
-                  Permanent Preference
+                  Global Configuration
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Choose your default format (PDF vs JPEG) once for all future ID downloads
+                Configure default templates, file formats, and mirror/non-mirror layout options
               </p>
             </div>
           </div>
@@ -108,238 +185,282 @@ export const AppSettingsModal: React.FC<AppSettingsModalProps> = ({
         </div>
 
         {/* Modal Content */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-6">
-          {/* Section 1: Default Export Format (PDF vs JPEG) */}
+        <div className="p-6 overflow-y-auto flex-1 space-y-7">
+          
+          {/* Section 1: Template Selection */}
           <div className="space-y-3">
-            <label className="text-xs font-bold text-gray-800 uppercase tracking-wider block">
-              1. Default Export Format (Once for All Time)
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+                <Layers className="w-4 h-4 text-emerald-600" />
+                1. Active ID Card Template
+              </label>
+              <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                Currently Active: Template #{selectedTemplateNum}
+              </span>
+            </div>
             <p className="text-[11px] text-gray-500">
-              When you click &quot;Export ID&quot; or download cards, this format is automatically used.
+              Select which security design or substrate blank to use for single and batch ID printing:
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-              {/* Option A: PDF */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+              {availableTemplates.map((tpl) => {
+                const isSelected = selectedTemplateNum === tpl.number;
+                return (
+                  <button
+                    key={tpl.number}
+                    type="button"
+                    onClick={() => setSelectedTemplateNum(tpl.number)}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden flex flex-col justify-between ${
+                      isSelected
+                        ? 'border-emerald-600 bg-emerald-50/90 ring-2 ring-emerald-500/30 shadow-xs'
+                        : 'border-gray-200 hover:border-gray-300 bg-white hover:bg-gray-50/60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span
+                        className="w-3 h-3 rounded-full"
+                        style={{ backgroundColor: tpl.themeColor || '#059669' }}
+                      />
+                      {isSelected && (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      )}
+                    </div>
+                    <div>
+                      <div className="font-bold text-xs text-gray-900">
+                        Template #{tpl.number}
+                      </div>
+                      <div className="text-[10px] text-gray-500 line-clamp-1 mt-0.5">
+                        {tpl.name || `Design Slot ${tpl.number}`}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Section 2: Default File Type */}
+          <div className="space-y-3 pt-2 border-t border-gray-100">
+            <label className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+              <FileText className="w-4 h-4 text-emerald-600" />
+              2. Default Export File Type
+            </label>
+            <p className="text-[11px] text-gray-500">
+              Choose the primary file format used when clicking export or downloading compiled sheets:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {fileTypeOptions.map((opt) => {
+                const isSelected = (localSettings.fileType || localSettings.defaultExportFormat) === opt.id;
+                const Icon = opt.icon;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() =>
+                      setLocalSettings((prev) => ({
+                        ...prev,
+                        fileType: opt.id as any,
+                        defaultExportFormat: opt.id === 'jpeg' ? 'jpeg' : 'pdf',
+                      }))
+                    }
+                    className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-start justify-between ${
+                      isSelected
+                        ? 'border-emerald-600 bg-emerald-50/90 ring-2 ring-emerald-500/25 shadow-xs'
+                        : 'border-gray-200 hover:border-gray-300 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs ${
+                        isSelected ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                          {opt.label}
+                          <span className="text-[9px] font-medium bg-gray-100 text-gray-600 px-1.5 py-0.2 rounded">
+                            {opt.badge}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                          {opt.desc}
+                        </div>
+                      </div>
+                    </div>
+                    {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Section 3: Mirror vs Non-Mirror Options */}
+          <div className="space-y-3 pt-2 border-t border-gray-100">
+            <label className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+              <FlipHorizontal className="w-4 h-4 text-emerald-600" />
+              3. Print Layout (Mirror vs Non-Mirror)
+            </label>
+            <p className="text-[11px] text-gray-500">
+              For PVC thermal pouch lamination, mirrored printing flips the card horizontally so the ink is protected behind the clear film layer:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Option A: Non-Mirror */}
               <button
                 type="button"
-                onClick={() =>
-                  setLocalSettings((prev) => ({
-                    ...prev,
-                    defaultExportFormat: 'pdf',
-                  }))
-                }
-                className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-                  localSettings.defaultExportFormat === 'pdf'
+                onClick={() => setLocalSettings((prev) => ({ ...prev, mirrorPrint: false }))}
+                className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                  !localSettings.mirrorPrint
                     ? 'border-emerald-600 bg-emerald-50/90 ring-2 ring-emerald-500/25 shadow-xs'
                     : 'border-gray-200 hover:border-gray-300 bg-white'
                 }`}
               >
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-red-100 text-red-700 flex items-center justify-center font-bold text-xs">
-                      <FileText className="w-4 h-4" />
+                    <div className="w-7 h-7 rounded-lg bg-gray-100 text-gray-700 flex items-center justify-center font-bold text-xs">
+                      📄
                     </div>
-                    <span className="text-sm font-bold text-gray-900">PDF Document</span>
+                    <span className="font-bold text-xs text-gray-900">Standard (Non-Mirror)</span>
                   </div>
-                  {localSettings.defaultExportFormat === 'pdf' && (
-                    <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center">
-                      <Check className="w-3 h-3" />
-                    </div>
-                  )}
+                  {!localSettings.mirrorPrint && <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
                 </div>
-                <p className="text-[11px] text-gray-600 leading-snug">
-                  High-res print-ready PDF document (.pdf) formatted for ISO A4 or direct thermal CR80 PVC printers.
+                <p className="text-[10px] text-gray-500 leading-snug">
+                  Direct print mode for standard inkjet paper, photo paper, or direct-to-card PVC printers.
                 </p>
-                <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-100/70 px-2 py-0.5 rounded-md">
-                  <Printer className="w-3 h-3" />
-                  <span>Standard for Print Shops</span>
-                </div>
               </button>
 
-              {/* Option B: JPEG */}
+              {/* Option B: Mirror */}
               <button
                 type="button"
-                onClick={() =>
-                  setLocalSettings((prev) => ({
-                    ...prev,
-                    defaultExportFormat: 'jpeg',
-                  }))
-                }
-                className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-                  localSettings.defaultExportFormat === 'jpeg'
+                onClick={() => setLocalSettings((prev) => ({ ...prev, mirrorPrint: true }))}
+                className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                  localSettings.mirrorPrint
                     ? 'border-emerald-600 bg-emerald-50/90 ring-2 ring-emerald-500/25 shadow-xs'
                     : 'border-gray-200 hover:border-gray-300 bg-white'
                 }`}
               >
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-cyan-100 text-cyan-700 flex items-center justify-center font-bold text-xs">
-                      <ImageIcon className="w-4 h-4" />
+                    <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                      🪞
                     </div>
-                    <span className="text-sm font-bold text-gray-900">JPEG HD Image</span>
+                    <span className="font-bold text-xs text-gray-900">Mirrored (PVC Print)</span>
                   </div>
-                  {localSettings.defaultExportFormat === 'jpeg' && (
-                    <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center">
-                      <Check className="w-3 h-3" />
-                    </div>
-                  )}
+                  {localSettings.mirrorPrint && <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
                 </div>
-                <p className="text-[11px] text-gray-600 leading-snug">
-                  Direct high-quality 300 DPI JPEG image file (.jpg) of the complete ID card with official verification header.
+                <p className="text-[10px] text-gray-500 leading-snug">
+                  Inverts the horizontal layout for reverse film printing, dragon sheet, and heat lamination.
                 </p>
-                <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-cyan-800 bg-cyan-100/70 px-2 py-0.5 rounded-md">
-                  <Sparkles className="w-3 h-3" />
-                  <span>Universal Mobile & Photo Ready</span>
-                </div>
               </button>
             </div>
           </div>
 
-          {/* Section 2: Format Sub-Configurations */}
-          <div className="bg-gray-50/80 rounded-2xl p-4 border border-gray-200/90 space-y-4">
-            <label className="text-xs font-bold text-gray-800 uppercase tracking-wider block">
-              2. Layout & Quality Preferences
+          {/* Section 4: Photo Color Mode */}
+          <div className="space-y-3 pt-2 border-t border-gray-100">
+            <label className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+              <Palette className="w-4 h-4 text-emerald-600" />
+              4. Photo Color Mode
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setLocalSettings((prev) => ({ ...prev, photoColorMode: 'color' }))}
+                className={`p-3 rounded-xl border text-center text-xs font-bold transition-all cursor-pointer ${
+                  localSettings.photoColorMode !== 'grayscale'
+                    ? 'bg-purple-600 text-white border-purple-600 shadow-2xs'
+                    : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                🎨 Full Vibrant Color
+                <span className="block text-[10px] font-normal opacity-85 mt-0.5">High fidelity RGB color</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLocalSettings((prev) => ({ ...prev, photoColorMode: 'grayscale' }))}
+                className={`p-3 rounded-xl border text-center text-xs font-bold transition-all cursor-pointer ${
+                  localSettings.photoColorMode === 'grayscale'
+                    ? 'bg-slate-800 text-white border-slate-800 shadow-2xs'
+                    : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                ⬛ B&W Laser / Grayscale
+                <span className="block text-[10px] font-normal opacity-85 mt-0.5">High-contrast monochrome</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 5: Resolution DPI Selection */}
+          <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+            <div>
+              <span className="text-xs font-semibold text-gray-800 block">Output Print Density</span>
+              <span className="text-[11px] text-gray-500">Raster supersampling resolution</span>
+            </div>
+            <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-gray-200">
+              <button
+                type="button"
+                onClick={() => setLocalSettings((prev) => ({ ...prev, resolutionDpi: 300 }))}
+                className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  localSettings.resolutionDpi === 300
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                300 DPI (Standard)
+              </button>
+              <button
+                type="button"
+                onClick={() => setLocalSettings((prev) => ({ ...prev, resolutionDpi: 600 }))}
+                className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  localSettings.resolutionDpi === 600
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                600 DPI (Ultra)
+              </button>
+            </div>
+          </div>
+
+          {/* Section 6: Crop Marks / Header switches */}
+          <div className="pt-2 border-t border-gray-100 space-y-2.5">
+            <label className="flex items-center justify-between text-xs text-gray-800 font-semibold cursor-pointer">
+              <span>Include Official Ethiopian Header Banner</span>
+              <input
+                type="checkbox"
+                checked={Boolean(localSettings.includeMetadataHeader)}
+                onChange={(e) =>
+                  setLocalSettings((prev) => ({
+                    ...prev,
+                    includeMetadataHeader: e.target.checked,
+                  }))
+                }
+                className="w-4 h-4 accent-emerald-600 cursor-pointer"
+              />
             </label>
 
-            {/* If PDF is chosen */}
-            {localSettings.defaultExportFormat === 'pdf' && (
-              <div className="space-y-2">
-                <span className="text-xs font-semibold text-gray-800 block">Default PDF Layout</span>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setLocalSettings((prev) => ({ ...prev, pdfFormat: 'a4_sheet' }))}
-                    className={`p-2.5 rounded-xl border text-left text-xs font-bold transition-all cursor-pointer ${
-                      localSettings.pdfFormat === 'a4_sheet'
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
-                        : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    ISO A4 Print Sheet
-                    <span className="block text-[10px] font-normal opacity-85 mt-0.5">Front & Back centered on A4</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setLocalSettings((prev) => ({ ...prev, pdfFormat: 'cr80_dual' }))}
-                    className={`p-2.5 rounded-xl border text-left text-xs font-bold transition-all cursor-pointer ${
-                      localSettings.pdfFormat === 'cr80_dual'
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
-                        : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    Direct CR80 Dual-Page
-                    <span className="block text-[10px] font-normal opacity-85 mt-0.5">85.60 × 53.98 mm cards</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* If JPEG is chosen */}
-            {localSettings.defaultExportFormat === 'jpeg' && (
-              <div className="space-y-2">
-                <span className="text-xs font-semibold text-gray-800 block">Default JPEG Layout</span>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setLocalSettings((prev) => ({ ...prev, jpegLayout: 'combined_sheet' }))}
-                    className={`p-2.5 rounded-xl border text-left text-xs font-bold transition-all cursor-pointer ${
-                      localSettings.jpegLayout === 'combined_sheet'
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
-                        : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    Complete ID Sheet (Front + Back)
-                    <span className="block text-[10px] font-normal opacity-85 mt-0.5">Side-by-side with header</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setLocalSettings((prev) => ({ ...prev, jpegLayout: 'both_files' }))}
-                    className={`p-2.5 rounded-xl border text-left text-xs font-bold transition-all cursor-pointer ${
-                      localSettings.jpegLayout === 'both_files'
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
-                        : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    Separate Front & Back JPEGs
-                    <span className="block text-[10px] font-normal opacity-85 mt-0.5">Individual image files</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Resolution DPI Selection */}
-            <div className="flex items-center justify-between pt-2 border-t border-gray-200">
-              <div>
-                <span className="text-xs font-semibold text-gray-800 block">Output Resolution</span>
-                <span className="text-[11px] text-gray-500">Raster supersampling density</span>
-              </div>
-              <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-gray-200">
-                <button
-                  type="button"
-                  onClick={() => setLocalSettings((prev) => ({ ...prev, resolutionDpi: 300 }))}
-                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                    localSettings.resolutionDpi === 300
-                      ? 'bg-emerald-600 text-white shadow-2xs'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  300 DPI (Standard)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLocalSettings((prev) => ({ ...prev, resolutionDpi: 600 }))}
-                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                    localSettings.resolutionDpi === 600
-                      ? 'bg-emerald-600 text-white shadow-2xs'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  600 DPI (Ultra)
-                </button>
-              </div>
-            </div>
-
-            {/* Crop Marks / Header switches */}
-            <div className="pt-2 border-t border-gray-200 space-y-2">
-              <label className="flex items-center justify-between text-xs text-gray-800 font-semibold cursor-pointer">
-                <span>Include Official Ethiopian Header Banner</span>
-                <input
-                  type="checkbox"
-                  checked={Boolean(localSettings.includeMetadataHeader)}
-                  onChange={(e) =>
-                    setLocalSettings((prev) => ({
-                      ...prev,
-                      includeMetadataHeader: e.target.checked,
-                    }))
-                  }
-                  className="w-4 h-4 accent-emerald-600 cursor-pointer"
-                />
-              </label>
-
-              <label className="flex items-center justify-between text-xs text-gray-800 font-semibold cursor-pointer">
-                <span>Include Precision Corner Crop Marks (Cutting Guides)</span>
-                <input
-                  type="checkbox"
-                  checked={Boolean(localSettings.includeCropMarks)}
-                  onChange={(e) =>
-                    setLocalSettings((prev) => ({
-                      ...prev,
-                      includeCropMarks: e.target.checked,
-                    }))
-                  }
-                  className="w-4 h-4 accent-emerald-600 cursor-pointer"
-                />
-              </label>
-            </div>
+            <label className="flex items-center justify-between text-xs text-gray-800 font-semibold cursor-pointer">
+              <span>Include Precision Corner Crop Marks (Cutting Guides)</span>
+              <input
+                type="checkbox"
+                checked={Boolean(localSettings.includeCropMarks)}
+                onChange={(e) =>
+                  setLocalSettings((prev) => ({
+                    ...prev,
+                    includeCropMarks: e.target.checked,
+                  }))
+                }
+                className="w-4 h-4 accent-emerald-600 cursor-pointer"
+              />
+            </label>
           </div>
 
           {savedSuccess && (
             <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 flex items-center justify-between text-emerald-900 text-xs font-semibold animate-fadeIn">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>Settings saved permanently to your browser storage!</span>
+                <span>Settings and Template preferences saved permanently!</span>
               </div>
             </div>
           )}

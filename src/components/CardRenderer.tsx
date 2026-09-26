@@ -264,6 +264,23 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
           </div>
         ) : null}
 
+        {tConfig.showBuiltinGuilloche !== false && !hasCustomBg && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none z-0 opacity-15" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} xmlns="http://www.w3.org/2000/svg">
+            {Array.from({ length: 12 }).map((_, i) => {
+              const y = (canvasHeight / 12) * i;
+              return (
+                <path
+                  key={i}
+                  d={`M 0,${y} Q ${canvasWidth / 4},${y - 20} ${canvasWidth / 2},${y} T ${canvasWidth},${y}`}
+                  fill="none"
+                  stroke={tConfig.themeColor || '#059669'}
+                  strokeWidth="1.5"
+                />
+              );
+            })}
+          </svg>
+        )}
+
         {showGrid && !isExporting && (
           <svg className="absolute inset-0 w-full h-full pointer-events-none z-10 opacity-35" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -517,10 +534,10 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
             {tConfig.showSecondaryPhoto !== false && (
               <div
                 className={`absolute overflow-hidden transition-all group bg-transparent ${
-                  tConfig.secondaryPhotoStyle === 'ghost'
-                    ? 'opacity-85 grayscale contrast-125'
-                    : tConfig.secondaryPhotoStyle === 'grayscale' || isPhotoGrayscale
+                  isPhotoGrayscale || tConfig.secondaryPhotoStyle === 'grayscale'
                     ? 'grayscale contrast-120'
+                    : tConfig.secondaryPhotoStyle === 'ghost'
+                    ? 'opacity-85 grayscale contrast-125'
                     : ''
                 } ${
                   highlightField === 'photoFrontSecondary' && !isExporting
@@ -538,6 +555,9 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                   boxShadow: 'none',
                   backgroundColor: 'transparent',
                   opacity: media.photoFrontSecondary?.opacity ?? (tConfig.secondaryPhotoStyle === 'ghost' ? 0.85 : 1.0),
+                  filter: (isPhotoGrayscale || tConfig.secondaryPhotoStyle === 'grayscale' || tConfig.secondaryPhotoStyle === 'ghost')
+                    ? 'grayscale(100%) contrast(120%)'
+                    : undefined,
                 }}
                 onPointerDown={(e) =>
                   handlePointerDown(
@@ -550,13 +570,23 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 onMouseEnter={() => setHoveredFieldId('photoFrontSecondary')}
                 onMouseLeave={() => setHoveredFieldId(null)}
               >
-                {data.photoUrl || data.secondaryPhotoUrl ? (
+                {data.secondaryPhotoUrl || data.photoUrl ? (
                   <img
-                    src={data.photoUrl || data.secondaryPhotoUrl}
-                    alt="Applicant Second Security Portrait (Copy of Main Photo)"
-                    className="w-full h-full object-cover pointer-events-none"
-                    style={{ border: 'none', outline: 'none' }}
-                    crossOrigin={(data.photoUrl || data.secondaryPhotoUrl)?.startsWith('data:') || (data.photoUrl || data.secondaryPhotoUrl)?.startsWith('blob:') ? undefined : 'anonymous'}
+                    src={data.secondaryPhotoUrl || data.photoUrl}
+                    alt="Applicant Second Security Portrait"
+                    className={`w-full h-full object-cover pointer-events-none ${
+                      isPhotoGrayscale || tConfig.secondaryPhotoStyle === 'grayscale' || tConfig.secondaryPhotoStyle === 'ghost'
+                        ? 'grayscale contrast-120'
+                        : ''
+                    }`}
+                    style={{
+                      border: 'none',
+                      outline: 'none',
+                      filter: (isPhotoGrayscale || tConfig.secondaryPhotoStyle === 'grayscale' || tConfig.secondaryPhotoStyle === 'ghost')
+                        ? 'grayscale(100%) contrast(120%)'
+                        : undefined,
+                    }}
+                    crossOrigin={(data.secondaryPhotoUrl || data.photoUrl)?.startsWith('data:') || (data.secondaryPhotoUrl || data.photoUrl)?.startsWith('blob:') ? undefined : 'anonymous'}
                   />
                 ) : (
                   <div className="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-gray-400 text-center p-1">
@@ -1321,7 +1351,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               </div>
             </div>
 
-            {/* RAW IMAGE CUTTER (No filters, no upscale, no text fallback) */}
+            {/* RAW IMAGE CUTTER - OPACITY SET TO 0.70 (Decreased by 30%) */}
             <div
               className={`absolute flex flex-col items-center justify-center transition-all ${
                 highlightField === 'backFanCut' || highlightField === 'barcodeText'
@@ -1349,7 +1379,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 className="w-full h-full overflow-hidden flex flex-col items-center justify-center bg-white"
                 style={{
                   borderRadius: `${media.backFanCut?.borderRadius ?? 8}px`,
-                  opacity: media.backFanCut?.opacity ?? 0.80,
+                  opacity: 0.70, // <--- Back FAN opacity decreased by 30%
                   backgroundColor: '#ffffff',
                 }}
               >
@@ -1496,6 +1526,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
               )}
             </div>
 
+            {/* QR CODE - OPACITY SET TO 0.80 (Decreased by 20%) */}
             <div
               className={`absolute flex flex-col items-center justify-center transition-all ${
                 highlightField === 'qrCodeBack' ? 'ring-4 ring-emerald-500 rounded-lg z-20 shadow-lg' : ''
@@ -1508,7 +1539,7 @@ export const CardRenderer = forwardRef<HTMLDivElement, CardRendererProps>(({
                 borderRadius: `${media.qrCodeBack.borderRadius || 0}px`,
                 border: 'none',
                 background: 'transparent',
-                opacity: (media.qrCodeBack.opacity !== undefined && media.qrCodeBack.opacity <= 0.8) ? media.qrCodeBack.opacity : 0.8,
+                opacity: 0.80, // <--- QR code opacity decreased by 20%
               }}
               onPointerDown={(e) =>
                 handlePointerDown(e, 'qrCodeBack', media.qrCodeBack.x, media.qrCodeBack.y)

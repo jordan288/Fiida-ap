@@ -2669,11 +2669,13 @@ export const PdfSlipExtractor: React.FC<PdfSlipExtractorProps> = ({
               ...prev,
               photoUrl: newPhotoUrl,
               secondaryPhotoUrl: newPhotoUrl,
+              photoTransparentUrl: newPhotoUrl,
             }));
             setIdData((prev) => ({
               ...prev,
               photoUrl: newPhotoUrl,
               secondaryPhotoUrl: newPhotoUrl,
+              photoTransparentUrl: newPhotoUrl,
             }));
             setBgRemovedSuccessFeedback('✓ Photo 1 enhanced & saved!');
             setTimeout(() => setBgRemovedSuccessFeedback(null), 3500);

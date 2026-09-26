@@ -880,6 +880,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
             data={idData}
             config={config}
             templateConfig={templateConfig}
+            photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
             scale={1}
             isExporting={true}
           />
@@ -890,6 +891,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
             data={idData}
             config={config}
             templateConfig={templateConfig}
+            photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
             scale={1}
             isExporting={true}
           />
@@ -1545,6 +1547,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                     data={idData}
                     config={config}
                     templateConfig={templateConfig}
+                    photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
                     scale={zoomScale}
                     highlightField={selectedFieldId}
                     onSelectField={(fId) => setSelectedFieldId(fId)}
@@ -1567,6 +1570,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                     data={idData}
                     config={config}
                     templateConfig={templateConfig}
+                    photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
                     scale={zoomScale}
                     highlightField={selectedFieldId}
                     onSelectField={(fId) => setSelectedFieldId(fId)}
@@ -1597,6 +1601,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                       data={idData}
                       config={config}
                       templateConfig={templateConfig}
+                      photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
                       scale={zoomScale * 1.15}
                       highlightField={selectedFieldId}
                       onSelectField={(fId) => setSelectedFieldId(fId)}
@@ -1614,6 +1619,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                         data={idData}
                         config={config}
                         templateConfig={templateConfig}
+                        photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
                         scale={zoomScale * 1.15}
                         highlightField={selectedFieldId}
                         onSelectField={(fId) => setSelectedFieldId(fId)}
@@ -1640,6 +1646,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                   data={idData}
                   config={config}
                   templateConfig={templateConfig}
+                  photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
                   scale={zoomScale * 1.2}
                   highlightField={selectedFieldId}
                   onSelectField={(fId) => setSelectedFieldId(fId)}
@@ -1660,6 +1667,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
                   data={idData}
                   config={config}
                   templateConfig={templateConfig}
+                  photoColorMode={appSettings.photoColorMode || idData.photoColorMode}
                   scale={zoomScale * 1.2}
                   highlightField={selectedFieldId}
                   onSelectField={(fId) => setSelectedFieldId(fId)}
@@ -4082,6 +4090,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
               ...prev,
               photoUrl: processedUrl,
               secondaryPhotoUrl: processedUrl,
+              photoTransparentUrl: processedUrl,
             }));
           } else if (target === 'secondary' || photoAdjustTarget === 'secondary') {
             setIdData((prev) => ({
@@ -4093,6 +4102,7 @@ export const CardStudio: React.FC<CardStudioProps> = ({
               ...prev,
               photoUrl: processedUrl,
               secondaryPhotoUrl: processedUrl,
+              photoTransparentUrl: processedUrl,
             }));
           }
         }}

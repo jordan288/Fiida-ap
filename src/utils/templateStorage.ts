@@ -168,6 +168,66 @@ export function getDefaultNumberedTemplates(): NumberedTemplate[] {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
+    {
+      number: 5,
+      id: 'template_5_custom',
+      name: 'Template 5',
+      description: 'Emerald security micro-mesh blank with calibrated digital dual-side alignment',
+      themeColor: '#059669',
+      badge: 'Template 5',
+      config: {
+        ...DEFAULT_TEMPLATE_CONFIG,
+        sourceType: 'custom',
+        presetId: 'custom_5',
+        backgroundColor: '#f0fdf4',
+        showBuiltinGuilloche: true,
+        showFlag: true,
+        showHeader: true,
+        showEmblem: true,
+        showFooterNotice: true,
+        showFieldLabels: false,
+        showFanContainerBox: true,
+        showBarcodeBox: true,
+        showFrontBarcode: true,
+        showFrontFan: true,
+        showSecondaryPhoto: true,
+        secondaryPhotoStyle: 'ghost',
+        showCornerMarks: false,
+      },
+      coordinates: JSON.parse(JSON.stringify(DEFAULT_COORDINATES)),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      number: 6,
+      id: 'template_6_custom',
+      name: 'Template 6',
+      description: 'National ID Enterprise deep-slate security weave with calibrated high-density biometric QR',
+      themeColor: '#1e293b',
+      badge: 'Template 6',
+      config: {
+        ...DEFAULT_TEMPLATE_CONFIG,
+        sourceType: 'custom',
+        presetId: 'custom_6',
+        backgroundColor: '#f8fafc',
+        showBuiltinGuilloche: true,
+        showFlag: true,
+        showHeader: true,
+        showEmblem: true,
+        showFooterNotice: true,
+        showFieldLabels: false,
+        showFanContainerBox: true,
+        showBarcodeBox: true,
+        showFrontBarcode: true,
+        showFrontFan: true,
+        showSecondaryPhoto: true,
+        secondaryPhotoStyle: 'grayscale',
+        showCornerMarks: false,
+      },
+      coordinates: JSON.parse(JSON.stringify(DEFAULT_COORDINATES)),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
   ];
 }
 
@@ -210,7 +270,15 @@ export function loadNumberedTemplates(): NumberedTemplate[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        memoryTemplatesCache = parsed
+        const defaults = getDefaultNumberedTemplates();
+        const existingNums = new Set(parsed.map((p: any) => p.number));
+        const combined = [...parsed];
+        for (const def of defaults) {
+          if (!existingNums.has(def.number)) {
+            combined.push(def);
+          }
+        }
+        memoryTemplatesCache = combined
           .map((t: NumberedTemplate) => {
             const coords = t.coordinates || loadTemplateCoordinates(t.number);
             return {
@@ -221,6 +289,7 @@ export function loadNumberedTemplates(): NumberedTemplate[] {
             };
           })
           .sort((a, b) => a.number - b.number);
+        saveNumberedTemplates(memoryTemplatesCache);
         return memoryTemplatesCache;
       }
     }

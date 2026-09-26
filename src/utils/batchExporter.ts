@@ -26,6 +26,73 @@ function applyGrayscaleToRect(ctx: CanvasRenderingContext2D, x: number, y: numbe
   } catch {}
 }
 
+/**
+ * Draws a photo onto canvas with reliable pixel-level monochrome conversion
+ * Guarantees small photo and main photo are 100% black and white when B&W mode is chosen,
+ * while preserving transparent PNG cutouts and brightness settings.
+ */
+function drawPhotoToCanvasWithFilters(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  isGrayscale: boolean,
+  brightnessPct: number = 100,
+  contrastMult: number = 1.15
+) {
+  if (isGrayscale) {
+    try {
+      const offscreen = document.createElement('canvas');
+      offscreen.width = Math.max(1, Math.round(w));
+      offscreen.height = Math.max(1, Math.round(h));
+      const offCtx = offscreen.getContext('2d');
+      if (offCtx) {
+        offCtx.drawImage(img, 0, 0, offscreen.width, offscreen.height);
+        const imgData = offCtx.getImageData(0, 0, offscreen.width, offscreen.height);
+        const d = imgData.data;
+        const bMult = brightnessPct / 100;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue; // preserve transparent PNG cutout
+          const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          let val = (g - 128) * contrastMult + 128;
+          if (bMult !== 1) val = val * bMult;
+          const finalVal = Math.min(255, Math.max(0, Math.round(val)));
+          d[i] = finalVal;
+          d[i + 1] = finalVal;
+          d[i + 2] = finalVal;
+        }
+        offCtx.putImageData(imgData, 0, 0);
+        ctx.drawImage(offscreen, x, y, w, h);
+        return;
+      }
+    } catch {}
+  }
+
+  // Fallback or full color draw
+  const filterParts: string[] = [];
+  if (isGrayscale) {
+    filterParts.push('grayscale(100%)', `contrast(${Math.round(contrastMult * 100)}%)`);
+  }
+  if (brightnessPct !== 100) {
+    filterParts.push(`brightness(${brightnessPct}%)`);
+  }
+  const activeFilter = filterParts.length > 0 ? filterParts.join(' ') : 'none';
+  try {
+    ctx.filter = activeFilter;
+    ctx.drawImage(img, x, y, w, h);
+    ctx.filter = 'none';
+  } catch {
+    ctx.drawImage(img, x, y, w, h);
+  }
+
+  // Double-guarantee: If isGrayscale was requested, ensure the region is monochrome
+  if (isGrayscale) {
+    applyGrayscaleToRect(ctx, x, y, w, h);
+  }
+}
+
 export function resolveItemConfigAndTemplate(
   item: BatchQueueItem,
   defaultConfig: CoordinatesConfig,
@@ -120,6 +187,7 @@ export async function renderOffscreenCard(
     quality?: number;
     photoColorMode?: 'color' | 'grayscale';
     includeCalibrationMarks?: boolean;
+    brightness?: number;
   }
 ): Promise<string> {
   const cardData = sanitizeIdCardData(data);
@@ -197,6 +265,63 @@ export async function renderOffscreenCard(
     } catch (e) {
       console.warn('Failed to load custom background image:', e);
     }
+  } else {
+    // Builtin Guilloche and Security Pattern when no custom background image is provided
+    if (templateConfig.showBuiltinGuilloche !== false) {
+      ctx.save();
+      const themeCol = templateConfig.themeColor || '#059669';
+      ctx.strokeStyle = themeCol;
+      ctx.globalAlpha = 0.12;
+      ctx.lineWidth = 1 * scale;
+      for (let wave = 0; wave < 14; wave++) {
+        ctx.beginPath();
+        const yOffset = (h / 14) * wave;
+        for (let x = 0; x <= w; x += 12) {
+          const y = yOffset + Math.sin((x / (120 * scale)) + wave * 0.5) * (18 * scale) + Math.cos((x / (60 * scale)) - wave * 0.3) * (8 * scale);
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    if (isFront && templateConfig.showHeader !== false) {
+      // Top flag ribbon
+      ctx.save();
+      const flagH = 8 * scale;
+      const stripeW = w / 3;
+      ctx.fillStyle = '#078930';
+      ctx.fillRect(0, 0, stripeW, flagH);
+      ctx.fillStyle = '#fcdd09';
+      ctx.fillRect(stripeW, 0, stripeW, flagH);
+      ctx.fillStyle = '#da121a';
+      ctx.fillRect(stripeW * 2, 0, stripeW, flagH);
+
+      // Top title text
+      ctx.fillStyle = '#0f172a';
+      ctx.font = getCanvasFontString('800', 11 * scale, activeFont);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText('የኢትዮጵያ ፌዴራላዊ ዴሞክራሲያዊ ሪፐብሊክ', w / 2, 14 * scale);
+
+      ctx.fillStyle = '#334155';
+      ctx.font = getCanvasFontString('700', 8.5 * scale, activeFont);
+      ctx.fillText('Federal Democratic Republic of Ethiopia', w / 2, 26 * scale);
+
+      ctx.fillStyle = templateConfig.themeColor || '#059669';
+      ctx.font = getCanvasFontString('800', 7.5 * scale, activeFont);
+      ctx.fillText('ብሔራዊ ዲጂታል መታወቂያ | NATIONAL DIGITAL ID', w / 2, 37 * scale);
+      ctx.restore();
+    } else if (!isFront && templateConfig.showHeader !== false) {
+      ctx.save();
+      ctx.fillStyle = '#0f172a';
+      ctx.font = getCanvasFontString('800', 10 * scale, activeFont);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText('የነዋሪነት መታወቂያ ካርድ | RESIDENT IDENTITY CARD', w / 2, 16 * scale);
+      ctx.restore();
+    }
   }
 
   if (isFront) {
@@ -208,6 +333,7 @@ export async function renderOffscreenCard(
     const pRadius = (config.media.photoFront.borderRadius || 14) * scale;
 
     const isGrayscale = (renderOptions?.photoColorMode === 'grayscale') || (cardData.photoColorMode === 'grayscale');
+    const brightnessPct = renderOptions?.brightness ?? (cardData as any).photoBrightness ?? 100;
 
     if (cardData.photoUrl) {
       try {
@@ -215,19 +341,7 @@ export async function renderOffscreenCard(
         ctx.save();
         roundedRectPath(ctx, pX, pY, pW, pH, pRadius);
         ctx.clip();
-        if (isGrayscale) {
-          try {
-            ctx.filter = 'grayscale(100%) contrast(115%)';
-            ctx.drawImage(photoImg, pX, pY, pW, pH);
-            ctx.filter = 'none';
-          } catch {
-            ctx.drawImage(photoImg, pX, pY, pW, pH);
-            applyGrayscaleToRect(ctx, pX, pY, pW, pH);
-          }
-        } else {
-          ctx.filter = 'none';
-          ctx.drawImage(photoImg, pX, pY, pW, pH);
-        }
+        drawPhotoToCanvasWithFilters(ctx, photoImg, pX, pY, pW, pH, isGrayscale, brightnessPct, 1.15);
         ctx.restore();
       } catch (e) {
         ctx.fillStyle = '#e2e8f0';
@@ -235,7 +349,7 @@ export async function renderOffscreenCard(
       }
     }
 
-    // Secondary Security Photo (Bottom Right)
+    // Secondary Security Photo (Bottom Right - small photo)
     if (templateConfig.showSecondaryPhoto !== false && (cardData.photoUrl || cardData.secondaryPhotoUrl)) {
       const sX = (config.media.photoFrontSecondary?.x ?? 825) * scale;
       const sY = (config.media.photoFrontSecondary?.y ?? 435) * scale;
@@ -245,28 +359,34 @@ export async function renderOffscreenCard(
       const sOpacity = config.media.photoFrontSecondary?.opacity ?? 0.85;
 
       try {
-        const secImg = await loadImage(cardData.photoUrl || cardData.secondaryPhotoUrl);
+        const secImg = await loadImage(cardData.secondaryPhotoUrl || cardData.photoUrl);
         ctx.save();
         ctx.globalAlpha = sOpacity;
         if (sRadius > 0) {
           roundedRectPath(ctx, sX, sY, sW, sH, sRadius);
           ctx.clip();
         }
-        if (templateConfig.secondaryPhotoStyle === 'goldBorder') {
-          ctx.drawImage(secImg, sX, sY, sW, sH);
-        } else if (isGrayscale || templateConfig.secondaryPhotoStyle === 'grayscale' || templateConfig.secondaryPhotoStyle === 'ghost') {
-          try {
-            ctx.filter = 'grayscale(100%) contrast(120%)';
-            ctx.drawImage(secImg, sX, sY, sW, sH);
-            ctx.filter = 'none';
-          } catch {
-            ctx.drawImage(secImg, sX, sY, sW, sH);
-            applyGrayscaleToRect(ctx, sX, sY, sW, sH);
-          }
-        } else {
-          ctx.filter = 'none';
-          ctx.drawImage(secImg, sX, sY, sW, sH);
-        }
+
+        // CRITICAL FIX: If card/export is in black & white (isGrayscale is true),
+        // the small photo MUST ALWAYS be black and white!
+        // Never bypass when goldBorder or color template is used.
+        const shouldSmallPhotoBeGrayscale =
+          isGrayscale ||
+          templateConfig.secondaryPhotoStyle === 'grayscale' ||
+          templateConfig.secondaryPhotoStyle === 'ghost';
+
+        drawPhotoToCanvasWithFilters(
+          ctx,
+          secImg,
+          sX,
+          sY,
+          sW,
+          sH,
+          shouldSmallPhotoBeGrayscale,
+          brightnessPct,
+          1.20
+        );
+
         ctx.restore();
       } catch (e) {}
     }

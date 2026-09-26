@@ -19,26 +19,28 @@ export interface BotPointsState {
   pricePerPointBirr: number;
   pointsPerPdf: number;
   transactions: PointTransaction[];
+  hasAdded1000Points?: boolean;
 }
 
 const STORAGE_KEY_POINTS = 'fayda_bot_points_state';
 
 export const PRICE_PER_POINT_BIRR = 7;
 export const POINTS_PER_PDF = 1;
-export const INITIAL_POINTS = 50; // Starter balance (worth 350 Birr)
+export const INITIAL_POINTS = 1050; // Starter balance with 1000 points added (worth 7,350 Birr)
 
 function getDefaultPointsState(): BotPointsState {
   return {
     points: INITIAL_POINTS,
     pricePerPointBirr: PRICE_PER_POINT_BIRR,
     pointsPerPdf: POINTS_PER_PDF,
+    hasAdded1000Points: true,
     transactions: [
       {
         id: 'tx_init',
         timestamp: new Date().toISOString(),
         delta: INITIAL_POINTS,
         type: 'add',
-        description: `Initial starter recharge (${INITIAL_POINTS} Points = ${INITIAL_POINTS * PRICE_PER_POINT_BIRR} Birr)`,
+        description: `Initial bulk processing balance (${INITIAL_POINTS} Points = ${INITIAL_POINTS * PRICE_PER_POINT_BIRR} Birr)`,
         remainingPoints: INITIAL_POINTS,
       },
     ],
@@ -51,12 +53,34 @@ export function getBotPointsState(): BotPointsState {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (typeof parsed?.points === 'number') {
-        return {
-          points: Math.max(0, parsed.points),
+        let currentPoints = Math.max(0, parsed.points);
+        let transactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
+        let hasAdded1000 = Boolean(parsed.hasAdded1000Points);
+
+        // Ensure 1000 points are added if not yet credited
+        if (!hasAdded1000) {
+          currentPoints += 1000;
+          hasAdded1000 = true;
+          const bonusTx: PointTransaction = {
+            id: `tx_bulk_1000_${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            delta: 1000,
+            type: 'add',
+            description: `🎁 +1,000 Points Added for Bulk Processing (+7,000 Birr Value)`,
+            remainingPoints: currentPoints,
+          };
+          transactions = [bonusTx, ...transactions.slice(0, 49)];
+        }
+
+        const state: BotPointsState = {
+          points: currentPoints,
           pricePerPointBirr: parsed.pricePerPointBirr || PRICE_PER_POINT_BIRR,
           pointsPerPdf: parsed.pointsPerPdf || POINTS_PER_PDF,
-          transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+          hasAdded1000Points: hasAdded1000,
+          transactions,
         };
+        saveBotPointsState(state);
+        return state;
       }
     }
   } catch {}

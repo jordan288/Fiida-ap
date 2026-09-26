@@ -942,10 +942,12 @@ export async function extractFromPdf(
 
   // CONCURRENT EXTRACTION: Run QR detection, Photo detection, 1D Barcode crop, and Back FAN cut simultaneously
   const [qrRes, photoRes, barcodeRes, finRes] = await Promise.all([
-    // 1. Precision QR code detection and crop
+    // 1. Precision QR code detection and crop (respecting calibrated region and Fayda layout)
     (async () => {
       try {
-        const res = cropExactQrCode(effectiveCanvas);
+        const effectiveRegs = getEffectiveRegions();
+        const qrReg = effectiveRegs.find((r) => r.id === 'qrCode' || r.type === 'qr');
+        const res = cropExactQrCode(effectiveCanvas, qrReg);
         return res.detected ? res : undefined;
       } catch (err) {
         console.warn('Page 1 QR extraction failed:', err);
@@ -1077,7 +1079,9 @@ export async function extractFromPdf(
           await nextPage.render({ canvasContext: nextCtx as any, viewport: nextVp }).promise;
 
           if (!extractedQrUrl) {
-            const nextQr = cropExactQrCode(nextCanvas);
+            const effectiveRegs = getEffectiveRegions();
+            const qrReg = effectiveRegs.find((r) => r.id === 'qrCode' || r.type === 'qr');
+            const nextQr = cropExactQrCode(nextCanvas, qrReg);
             if (nextQr.detected) {
               extractedQrUrl = nextQr.qrUrl;
               qrDecodedText = nextQr.qrText;
@@ -1146,6 +1150,7 @@ export async function extractFromPdf(
   if (finalPhotoUrl) {
     parsedData.data.photoUrl = finalPhotoUrl;
     parsedData.data.secondaryPhotoUrl = finalPhotoUrl;
+    parsedData.data.photoTransparentUrl = cutoutUrl || finalPhotoUrl;
     extractedPhotoUrl = finalPhotoUrl;
   }
   if (detectedPhotoBox) {
@@ -1262,10 +1267,12 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
 
         // CONCURRENT EXTRACTION: Run QR detection, Photo detection, 1D Barcode crop, and Back FAN cut simultaneously
         const [qrResult, photoResult, barcodeResult, finResult] = await Promise.all([
-          // 1. QR code detection and crop
+          // 1. QR code detection and crop (respecting calibrated region and Fayda layout)
           (async () => {
             try {
-              const res = cropExactQrCode(effectiveCanvas);
+              const effectiveRegs = getEffectiveRegions();
+              const qrReg = effectiveRegs.find((r) => r.id === 'qrCode' || r.type === 'qr');
+              const res = cropExactQrCode(effectiveCanvas, qrReg);
               return res.detected ? res : undefined;
             } catch (err) {
               console.warn('QR scan on image failed', err);
@@ -1395,6 +1402,7 @@ export async function extractFromImage(file: File): Promise<ExtractionResult> {
         if (finalPhotoUrl) {
           parsed.data.photoUrl = finalPhotoUrl;
           parsed.data.secondaryPhotoUrl = finalPhotoUrl;
+          parsed.data.photoTransparentUrl = cutoutUrl || finalPhotoUrl;
           extractedPhotoUrl = finalPhotoUrl;
         }
         if (detectedPhotoBox) {

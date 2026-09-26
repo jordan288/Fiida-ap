@@ -12,31 +12,40 @@ import {
 } from 'lucide-react';
 import {
   BotPointsState,
+  getBotPointsState,
   addBotPoints,
   minusBotPoints,
   setBotPoints,
 } from '../utils/botPointsManager';
 
 interface BotPointsOwnerModalProps {
-  isOpen: boolean;
+  isOpen?: boolean;
   onClose: () => void;
-  pointsState: BotPointsState;
-  onPointsUpdated: (newState: BotPointsState) => void;
+  pointsState?: BotPointsState;
+  onPointsUpdated?: (newState: BotPointsState) => void;
+  onPointUpdate?: (newState: BotPointsState) => void;
 }
 
 export const BotPointsOwnerModal: React.FC<BotPointsOwnerModalProps> = ({
-  isOpen,
+  isOpen = true,
   onClose,
   pointsState,
   onPointsUpdated,
+  onPointUpdate,
 }) => {
-  const [customAmount, setCustomAmount] = useState<string>('10');
+  const effectiveState = pointsState || getBotPointsState();
+  const [customAmount, setCustomAmount] = useState<string>('1000');
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
-  if (!isOpen) return null;
+  if (isOpen === false) return null;
 
-  const currentPoints = pointsState.points;
-  const birrValue = currentPoints * pointsState.pricePerPointBirr;
+  const currentPoints = effectiveState.points;
+  const birrValue = currentPoints * effectiveState.pricePerPointBirr;
+
+  const notifyUpdated = (updated: BotPointsState) => {
+    if (onPointsUpdated) onPointsUpdated(updated);
+    if (onPointUpdate) onPointUpdate(updated);
+  };
 
   const triggerFeedback = (msg: string) => {
     setActionFeedback(msg);
@@ -45,14 +54,14 @@ export const BotPointsOwnerModal: React.FC<BotPointsOwnerModalProps> = ({
 
   const handleAdd = (amount: number) => {
     const updated = addBotPoints(amount, 'Owner Point Recharge');
-    onPointsUpdated(updated);
-    triggerFeedback(`✅ Added +${amount} Points (+${amount * pointsState.pricePerPointBirr} Birr)`);
+    notifyUpdated(updated);
+    triggerFeedback(`✅ Added +${amount} Points (+${amount * effectiveState.pricePerPointBirr} Birr)`);
   };
 
   const handleMinus = (amount: number) => {
     const updated = minusBotPoints(amount, 'Owner Point Deduction');
-    onPointsUpdated(updated);
-    triggerFeedback(`🔻 Deducted -${amount} Points (-${amount * pointsState.pricePerPointBirr} Birr)`);
+    notifyUpdated(updated);
+    triggerFeedback(`🔻 Deducted -${amount} Points (-${amount * effectiveState.pricePerPointBirr} Birr)`);
   };
 
   const handleCustomAdd = () => {
@@ -71,8 +80,8 @@ export const BotPointsOwnerModal: React.FC<BotPointsOwnerModalProps> = ({
     const num = parseInt(customAmount, 10);
     if (isNaN(num) || num < 0) return;
     const updated = setBotPoints(num, 'Owner Balance Set');
-    onPointsUpdated(updated);
-    triggerFeedback(`🔄 Points balance set to ${num} Points (${num * pointsState.pricePerPointBirr} Birr)`);
+    notifyUpdated(updated);
+    triggerFeedback(`🔄 Points balance set to ${num} Points (${num * effectiveState.pricePerPointBirr} Birr)`);
   };
 
   return (
@@ -158,19 +167,27 @@ export const BotPointsOwnerModal: React.FC<BotPointsOwnerModalProps> = ({
               <span className="text-[11px] text-amber-400 font-medium">Add to bot balance</span>
             </div>
 
-            <div className="grid grid-cols-5 gap-2">
-              {[1, 5, 10, 50, 100].map((amt) => (
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+              {[10, 50, 100, 200, 500, 1000].map((amt) => (
                 <button
                   key={`add_${amt}`}
                   onClick={() => handleAdd(amt)}
-                  className="py-2.5 px-2 bg-emerald-600/20 hover:bg-emerald-600/30 active:scale-95 border border-emerald-500/40 rounded-xl text-center transition cursor-pointer group"
+                  className={`py-2.5 px-2 rounded-xl text-center transition cursor-pointer group active:scale-95 ${
+                    amt === 1000
+                      ? 'bg-amber-500/25 hover:bg-amber-500/35 border-2 border-amber-400/80 shadow-md shadow-amber-950/30 ring-1 ring-amber-400/50'
+                      : 'bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40'
+                  }`}
                 >
-                  <div className="text-xs font-bold text-emerald-300 flex items-center justify-center gap-0.5">
+                  <div className={`text-xs font-bold flex items-center justify-center gap-0.5 ${
+                    amt === 1000 ? 'text-amber-300' : 'text-emerald-300'
+                  }`}>
                     <Plus className="w-3 h-3 group-hover:scale-125 transition-transform" />
                     <span>{amt} Pt{amt > 1 ? 's' : ''}</span>
                   </div>
-                  <div className="text-[10px] text-emerald-400/80 font-mono mt-0.5">
-                    +{amt * pointsState.pricePerPointBirr} Birr
+                  <div className={`text-[10px] font-mono mt-0.5 ${
+                    amt === 1000 ? 'text-amber-300 font-bold' : 'text-emerald-400/80'
+                  }`}>
+                    +{amt * effectiveState.pricePerPointBirr} Birr
                   </div>
                 </button>
               ))}

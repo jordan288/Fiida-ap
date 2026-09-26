@@ -94,44 +94,7 @@ export const PdfPositionMarker: React.FC<PdfPositionMarkerProps> = ({
   // Initialize regions with any permanently saved positions or auto-detected boxes
   const [regions, setRegions] = useState<PdfMarkedRegion[]>(() => {
     const saved = loadPermanentRegions();
-    const base = saved && saved.length > 0 ? getEffectiveRegions() : DEFAULT_PDF_MARKED_REGIONS.map((r) => ({ ...r }));
-    
-    // If canvas dimensions and detected boxes are provided and no custom permanent layout saved yet, calibrate photo, QR & barcode
-    if (canvasDimensions && canvasDimensions.width > 0 && canvasDimensions.height > 0) {
-      if (detectedPhotoBox && !saved) {
-        const photo = base.find((r) => r.id === 'photo');
-        const pX = (detectedPhotoBox.x / canvasDimensions.width) * 100;
-        const pY = (detectedPhotoBox.y / canvasDimensions.height) * 100;
-        const pW = (detectedPhotoBox.width / canvasDimensions.width) * 100;
-        const pH = (detectedPhotoBox.height / canvasDimensions.height) * 100;
-        // Only override if within realistic portrait photo bounds on Fayda slip (w <= 26%, x <= 15%)
-        if (photo && pW <= 26 && pX <= 15 && pH <= 32) {
-          photo.x = Math.max(2, pX);
-          photo.y = Math.max(5, pY);
-          photo.width = Math.max(15, pW);
-          photo.height = Math.max(18, pH);
-        }
-      }
-      if (detectedQrBox && !saved) {
-        const qr = base.find((r) => r.id === 'qrCode');
-        if (qr) {
-          qr.x = Math.max(0, Math.min(90, (detectedQrBox.x / canvasDimensions.width) * 100));
-          qr.y = Math.max(0, Math.min(90, (detectedQrBox.y / canvasDimensions.height) * 100));
-          qr.width = Math.max(5, Math.min(50, (detectedQrBox.width / canvasDimensions.width) * 100));
-          qr.height = Math.max(5, Math.min(50, (detectedQrBox.height / canvasDimensions.height) * 100));
-        }
-      }
-      if (detectedBarcodeBox && !saved) {
-        const barcode = base.find((r) => r.id === 'barcode');
-        if (barcode) {
-          barcode.x = Math.max(0, Math.min(90, (detectedBarcodeBox.x / canvasDimensions.width) * 100));
-          barcode.y = Math.max(0, Math.min(90, (detectedBarcodeBox.y / canvasDimensions.height) * 100));
-          barcode.width = Math.max(10, Math.min(70, (detectedBarcodeBox.width / canvasDimensions.width) * 100));
-          barcode.height = Math.max(3, Math.min(30, (detectedBarcodeBox.height / canvasDimensions.height) * 100));
-        }
-      }
-    }
-    return base;
+    return saved && saved.length > 0 ? getEffectiveRegions() : DEFAULT_PDF_MARKED_REGIONS.map((r) => ({ ...r }));
   });
 
   const [selectedRegionId, setSelectedRegionId] = useState<string>('photo');
